@@ -204,8 +204,8 @@ check_account_sane() {
     uu=$(printf '%s' "$bu" | cut -d: -f3); ug=$(printf '%s' "$bu" | cut -d: -f4)
     case "$uu" in ''|*[!0-9]*|0) die "user $USER_NAME has uid '$uu' (0 or invalid)" ;; esac
     case "$ug" in ''|*[!0-9]*|0) die "user $USER_NAME has primary gid '$ug' (0 or invalid)" ;; esac
-    [ "$uu" -ge "$lo" ] && [ "$uu" -le "$hi" ] || die "user $USER_NAME uid $uu outside system range $lo..$hi"
-    [ -n "$gg" ] && [ "$ug" = "$gg" ] || die "user $USER_NAME primary gid $ug is not group $USER_NAME"
+    if [ "$uu" -lt "$lo" ] || [ "$uu" -gt "$hi" ]; then die "user $USER_NAME uid $uu outside system range $lo..$hi"; fi
+    if [ -z "$gg" ] || [ "$ug" != "$gg" ]; then die "user $USER_NAME primary gid $ug is not group $USER_NAME"; fi
   fi
 }
 

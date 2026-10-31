@@ -19,10 +19,10 @@ if bg=$(getent group botaudit); then
 fi
 if bu=$(getent passwd botaudit); then
   uu=$(echo "$bu" | cut -d: -f3); ug=$(echo "$bu" | cut -d: -f4)
-  num "$uu" && num "$ug" || fail "user botaudit has bad uid/gid '$uu/$ug'"
+  if ! num "$uu" || ! num "$ug"; then fail "user botaudit has bad uid/gid '$uu/$ug'"; fi
   [ "$uu" != 0 ] || fail "user botaudit has uid 0"
   [ "$ug" != 0 ] || fail "user botaudit has primary gid 0"
-  [ "$uu" -ge "$lo" ] && [ "$uu" -le "$hi" ] || fail "user botaudit uid $uu outside system range $lo..$hi"
-  [ -n "$gg" ] && [ "$ug" = "$gg" ] || fail "user botaudit primary gid $ug is not group botaudit"
+  if [ "$uu" -lt "$lo" ] || [ "$uu" -gt "$hi" ]; then fail "user botaudit uid $uu outside system range $lo..$hi"; fi
+  if [ -z "$gg" ] || [ "$ug" != "$gg" ]; then fail "user botaudit primary gid $ug is not group botaudit"; fi
 fi
 exit 0
