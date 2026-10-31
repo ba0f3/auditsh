@@ -211,9 +211,13 @@ chown 4242:4242 /tmp/m2out /tmp/m2out/authorized_keys; chmod 0600 /tmp/m2out/aut
 m2() { # $1 label; account made hostile-looking (HOME owned by it) before each run
   chown botaudit:botaudit $H; xsnap > /tmp/x0
   (cd /tmp/h1 && auditsh-setup --local --key "$(cat /root/tk.pub)" >/tmp/f 2>&1); r1=$?; xsnap > /tmp/x1
-  (cd /tmp/h1 && auditsh-setup --account-only >/tmp/g 2>&1); r2=$?; xsnap > /tmp/x2
+  cp -p /etc/sudoers.d/botaudit /root/sudoers.pkg
+  (cd /tmp/h1 && auditsh-setup --account-only >/tmp/g 2>&1); r2=$?
+  # fail-closed by design: a refused --account-only removes the package sudoers; restore it for the next step
+  if [ -e /etc/sudoers.d/botaudit ]; then sd="sudoers KEPT (BUG)"; else sd="sudoers removed"; fi
+  cp -p /root/sudoers.pkg /etc/sudoers.d/botaudit; xsnap > /tmp/x2
   o="OUTSIDE HOME UNCHANGED"; { diff -q /tmp/x0 /tmp/x1 && diff -q /tmp/x0 /tmp/x2; } >/dev/null || { o="OUTSIDE HOME CHANGED"; diff /tmp/x0 /tmp/x2; }
-  echo "[$1] full rc=$r1 refused=$(grep -c 'refusing to touch' /tmp/f); account-only rc=$r2 refused=$(grep -c 'refusing to touch' /tmp/g); $o"
+  echo "[$1] full rc=$r1 refused=$(grep -c 'refusing to touch' /tmp/f); account-only rc=$r2 refused=$(grep -c 'refusing to touch' /tmp/g) $sd; $o"
   stat -c '%u:%g %a %n' /tmp/m2out/authorized_keys /tmp/m2out/sentinel
 }
 mv $S $S.real; ln -s /tmp/m2out $S; chown -h botaudit:botaudit $S
