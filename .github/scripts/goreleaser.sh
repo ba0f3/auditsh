@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run the pinned, sha256-verified GoReleaser (OSS). Cached in .bin/ (gitignored).
+# Run the pinned, sha256-verified GoReleaser (OSS). Tarball cached in .bin/ (gitignored), re-verified every run.
 # Usage: .github/scripts/goreleaser.sh <goreleaser args...>
 # Checksums are from the release's checksums.txt (goreleaser/goreleaser v2.19.0).
 set -eu
@@ -10,13 +10,20 @@ case "$(uname -m)" in
   *) echo "unsupported host arch $(uname -m)" >&2; exit 1 ;;
 esac
 root=$(git rev-parse --show-toplevel)
-bin=$root/.bin/goreleaser-$GORELEASER_VERSION
-if [ ! -x "$bin" ]; then
-  tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-  curl --proto '=https' --tlsv1.2 -fsSL -o "$tmp/gr.tgz" \
+cache=$root/.bin
+tgz=$cache/goreleaser_${GORELEASER_VERSION}_Linux_$a.tar.gz
+bin=$cache/goreleaser-$GORELEASER_VERSION
+ok() { [ -f "$tgz" ] && echo "$sum  $tgz" | sha256sum -c - >/dev/null 2>&1; }
+# The cached tarball is re-verified on every run; on mismatch it is re-downloaded once, then we fail.
+if ! ok; then
+  mkdir -p "$cache"; rm -f "$tgz"
+  curl --proto '=https' --tlsv1.2 -fsSL -o "$tgz.part" \
     "https://github.com/goreleaser/goreleaser/releases/download/v$GORELEASER_VERSION/goreleaser_Linux_$a.tar.gz"
-  echo "$sum  $tmp/gr.tgz" | sha256sum -c - >/dev/null
-  tar -xzf "$tmp/gr.tgz" -C "$tmp" goreleaser
-  mkdir -p "$root/.bin" && mv "$tmp/goreleaser" "$bin"
+  mv "$tgz.part" "$tgz"
+  ok || { rm -f "$tgz"; echo "goreleaser tarball sha256 mismatch (expected $sum)" >&2; exit 1; }
 fi
-exec "$bin" "$@"
+# Always re-extract the binary from the verified tarball, so a tampered cached binary is never run.
+tmp=$(mktemp -d "$cache/x.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+tar -xzf "$tgz" -C "$tmp" goreleaser
+mv -f "$tmp/goreleaser" "$bin"
+"$bin" "$@"

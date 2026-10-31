@@ -14,7 +14,7 @@ FUZZ_TARGETS := FuzzParseCommand FuzzAllowlistExec FuzzEnvSanitize FuzzLogEncode
 SHELL_FILES  := install.sh build.sh packaging/*.sh tests/chroot-test.sh tests/pkg-test.sh deploy/auditsh-jvm .github/scripts/*.sh
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint fuzz fuzz-long vuln check snapshot pkg release clean
+.PHONY: help build test lint fuzz fuzz-long vuln check snapshot pkg release verify-release clean
 
 help: ## list targets
 	@awk 'BEGIN{FS=":.*## "} /^[a-z-]+:.*## /{printf "  %-10s %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -48,19 +48,25 @@ vuln: ## govulncheck (pinned v1.9.0)
 
 check: test lint vuln ## test + lint + vuln
 
-snapshot: ## local untagged release build (binaries, deb/rpm, SHA256SUMS) in dist/ and release/
+snapshot: ## local untagged build (version 0.0.0~git<sha>; does NOT reproduce a release's SHA256SUMS) (binaries, deb/rpm, SHA256SUMS) in dist/ and release/
 	$(GORELEASER) release --snapshot --clean
 	.github/scripts/collect-release.sh
 
 pkg: snapshot ## alias for snapshot
 
-release: ## tag must be on HEAD, tree clean, GITHUB_TOKEN set: build + publish the GitHub release
-	@[ -n "$$GITHUB_TOKEN" ] || { echo "GITHUB_TOKEN is not set"; exit 1; }
-	@[ -z "$$(git status --porcelain)" ] || { echo "working tree is not clean"; exit 1; }
-	@git describe --tags --exact-match --match 'v[0-9]*' HEAD >/dev/null 2>&1 || { echo "HEAD has no v* tag"; exit 1; }
-	@[ "$$(go env GOVERSION)" = go1.27.3 ] || { echo "need go1.27.3, have $$(go env GOVERSION)"; exit 1; }
+release: ## LOCAL publish (no provenance attestation): annotated v* tag pushed to origin == HEAD, clean tree, GITHUB_TOKEN
+	@.github/scripts/release-gate.sh
+	@echo "WARNING: a local release carries NO build-provenance attestation (install --require-attestation will fail)."
+	@echo "WARNING: prefer the release.yml workflow as publisher once GitHub Actions works."
 	$(GORELEASER) release --clean
 	.github/scripts/collect-release.sh
+
+verify-release: ## rebuild the tag at HEAD without publishing; compare with the published SHA256SUMS
+	@[ -z "$$(git status --porcelain)" ] || { echo "working tree is not clean"; exit 1; }
+	@t=$$(git describe --tags --exact-match --match 'v[0-9]*' HEAD) || { echo "HEAD has no v* tag"; exit 1; }; \
+	$(GORELEASER) release --clean --skip=publish,announce && .github/scripts/collect-release.sh && \
+	curl --proto '=https' --tlsv1.2 -fsSL -o dist/SHA256SUMS.published "https://github.com/ba0f3/auditsh/releases/download/$$t/SHA256SUMS" && \
+	cmp dist/SHA256SUMS.published release/SHA256SUMS && echo "OK: $$t reproduces the published SHA256SUMS"
 
 clean: ## remove build outputs (dist/, release/, stage/)
 	rm -rf dist release stage

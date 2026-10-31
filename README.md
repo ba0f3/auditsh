@@ -315,15 +315,33 @@ On a paused VM the fuzzer may report "fuzzing process hung"; replay the reported
 `make help` lists the targets: `build`, `test` (vet + race), `lint` (gofmt, shellcheck, actionlint, action SHA pins, visudo,
 `goreleaser check`), `fuzz` (all 5 targets, `FUZZTIME=30s` by default), `fuzz-long` (`FUZZLONGTIME=30m`), `vuln` (govulncheck v1.9.0),
 `snapshot`/`pkg`, `release` and `clean`. GoReleaser is pinned (v2.19.0) and sha256-verified by `.github/scripts/goreleaser.sh`, which
-caches it in `.bin/`. Bump the version only together with both tarball hashes from the release's `checksums.txt`.
+caches the tarball in `.bin/` (re-verified on every run; re-downloaded once on mismatch). Bump the version only together with both tarball hashes from the release's `checksums.txt`.
+
+**Preferred publisher:** the `release.yml` workflow (it adds build provenance, which `install.sh --require-attestation` checks).
+While GitHub Actions is unavailable, a maintainer can publish locally with `make release`. A local release carries **no**
+build-provenance attestation, and `make release` prints a warning saying so.
 
 Local release (go1.27.3, `visudo`, `curl` and a `GITHUB_TOKEN` with `contents: write` on this repo):
 ```sh
-make check fuzz            # test + lint + vuln, then a 30s fuzz smoke per target
-make snapshot              # optional dry run: dist/ and release/ (flat assets + SHA256SUMS)
+make check fuzz                                 # test + lint + vuln, then a 30s fuzz smoke per target
+make snapshot                                   # optional dry run: dist/ and release/ (flat assets + SHA256SUMS)
 git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z
-GITHUB_TOKEN=... make release   # needs a clean tree with HEAD tagged v*; builds, publishes, then prints the hashes
+GITHUB_TOKEN=... make release                   # builds, publishes, prints the hashes
 ```
+`.github/scripts/release-gate.sh` checks these before anything is built:
+- `GITHUB_TOKEN` is set, the tree is clean and the toolchain is go1.27.3;
+- HEAD carries exactly one `v*` tag, and it is annotated (`git cat-file -t` is `tag`);
+- the same tag object is already on origin (`git ls-remote`), and it points at HEAD.
+
 `make release` ends with `AUDITSH_SHA256 (sha256 of SHA256SUMS): <hash>`. Publish that hash out of band (for example a signed
-announcement): it is the trust anchor for `install.sh --sha256`. Anyone can check it by running `make snapshot` on the tag; the
-`SHA256SUMS` comes out the same. If the tag push also starts `release.yml`, only one of the two can create the release. Use one path per tag.
+announcement): it is the trust anchor for `install.sh --sha256`. If the tag push also starts `release.yml`, only one of the two can
+create the release, so use one path per tag.
+
+### Reproducing a release
+`make snapshot` does **not** reproduce a release's `SHA256SUMS`. It builds version `0.0.0~git<sha>`, so the package names and
+contents differ. To check a published release, rebuild it from a clean checkout of its tag:
+```sh
+git checkout vX.Y.Z            # clean tree, go1.27.3
+make verify-release            # = .github/scripts/goreleaser.sh release --clean --skip=publish,announce
+                               #   then compares release/SHA256SUMS with the published one
+```
