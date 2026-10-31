@@ -44,11 +44,34 @@ sudo: `ss -tlnp`, `ss -ulnp`, `dmesg -T [--level=err|err,warn|emerg,alert,crit,e
 JVM (as the JVM's user, needs `--java-user`): `jcmd`/`jstat` forms, see [Java/JVM diagnostics](#javajvm-diagnostics-opt-in-per-java-user).
 System audit: `who`, `last -n N` (N 1-9999), `uname -a`, `dpkg-query -l` (deb) / `rpm -qa` (rpm),
 `systemctl list-units --failed --no-pager`, `systemctl list-timers --no-pager`, `getent passwd|group`,
-sudo: `sshd -T`, `crontab -l -u root`, `nft list ruleset`, `auditctl -l`. Not included: iptables (alternatives symlink,
-which auditsh refuses; use `nft list ruleset`) and `/etc/os-release` (the internal reader only serves `/proc`).
+sudo: `sshd -T`, `crontab -l -u root`, `nft list ruleset`, `auditctl -l`, `iptables -S`, `iptables-save`, `ip6tables -S`,
+`ip6tables-save` (exact argv; see [Symlinked binaries](#symlinked-binaries-iptables)).
+OS identification (auditsh's own reader, no `cat` binary): `cat /etc/os-release|/etc/redhat-release|/etc/debian_version|/etc/lsb-release`,
+and `lsb_release -a` (deb, if installed).
 Not available: less, more, vi, find, tar, awk, sed, sh, bash, env, xargs, tee, python, git, or anything else on GTFOBins.
 **pmap was dropped.** It needs a PID under sudo, and fixed-argv sudoers can't express that (see design.md §4).
 Use `cat /proc/<pid>/smaps_rollup` instead.
+
+### Symlinked binaries (iptables)
+
+auditsh normally refuses any binary path containing a symlink. `/usr/sbin/iptables` is always one
+(`-> /etc/alternatives/iptables -> xtables-nft-multi` or `xtables-legacy-multi`, Debian and RHEL alike), so
+those rules carry `resolve: true`. Before every run auditsh walks the chain (at most 8 links): every link
+must be root-owned, every directory holding a link or the target (up to `/`) must be root-owned, not a
+symlink and not group/other-writable, and the final file must be a root-owned, not group/other-writable
+regular file. A dangling link, a loop or a missing iptables fails cleanly (exit 126). It then runs
+`sudo -n -- /usr/sbin/iptables -S`, the original path: sudo matches the sudoers entry (it compares the
+resolved file) and the multi-call binary dispatches on argv[0] = `iptables`. sudoers uses `""` for
+`iptables-save`/`ip6tables-save` so no argument (e.g. `-f FILE`) is accepted. Only root can change the
+chain, so re-resolution by sudo/exec after the check is not an escalation path. Legacy iptables may try to
+`modprobe` table modules; NOEXEC blocks that, so on a host without the modules loaded the command fails
+rather than loading them.
+
+`internal:fileread` serves exactly `/etc/os-release`, `/etc/redhat-release`, `/etc/debian_version` and
+`/etc/lsb-release` (fixed list in the binary; config can only name those). The same root-owned chain rule
+applies (`/etc/os-release -> ../usr/lib/os-release`, `/etc/redhat-release -> rocky-release`), the target must
+be `/etc/*-release|version` or `/usr/lib/*-release`, a world-readable root-owned regular file, and at most
+64 KiB is returned.
 
 ## Java/JVM diagnostics (opt-in per Java user)
 Forms (block `BEGIN Java/JVM diagnostics` in allowlist.yaml): `jcmd <pid> GC.heap_info|Thread.print|VM.flags|VM.uptime|VM.version`,

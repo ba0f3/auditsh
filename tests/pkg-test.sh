@@ -74,6 +74,23 @@ t "java: botaudit cannot reach helper as root, only as jvmapp"
 su -s /bin/sh botaudit -c 'sudo -n -u root /usr/local/sbin/auditsh-jvm jcmd 1 VM.uptime' 2>&1 | tail -1
 su -s /bin/sh botaudit -c 'sudo -n -u jvmapp /usr/local/sbin/auditsh-jvm jcmd 1 GC.heap_dump /tmp/x' 2>&1 | tail -1
 su -s /bin/sh botaudit -c 'sudo -n -u jvmapp /usr/local/sbin/auditsh-jvm jcmd 1 VM.uptime' 2>&1 | tail -1
+t "iptables (resolve: true) + OS identification"
+for c in 'iptables -S' 'iptables-save' 'ip6tables -S' 'ip6tables-save' 'cat /etc/os-release' 'cat /etc/redhat-release' 'cat /etc/debian_version' 'cat /etc/lsb-release' 'lsb_release -a'; do
+  # shellcheck disable=SC2029  # $c is a fixed local test string
+  ssh $O botaudit@127.0.0.1 "$c" >/tmp/o 2>&1; echo "[$c] rc=$? lines=$(wc -l </tmp/o) first=$(head -1 /tmp/o | cut -c1-50)"
+done
+for c in 'iptables -F' 'iptables -L' 'iptables-save -f /tmp/x' 'ip6tables -S INPUT' 'cat /usr/lib/os-release' 'cat /etc/shadow' 'cat /etc/issue'; do
+  # shellcheck disable=SC2029  # $c is a fixed local test string
+  ssh $O botaudit@127.0.0.1 "$c" >/dev/null 2>&1; echo "[$c] rc=$?"
+done
+for c in '/usr/sbin/iptables -F' '/usr/sbin/iptables-save -f /tmp/x' '/usr/sbin/iptables -S -t nat' "$(readlink -f /usr/sbin/iptables) iptables -F"; do
+  printf '[sudo %s] ' "$c"; su -s /bin/sh botaudit -c "sudo -n $c" 2>&1 | tail -1
+done
+su -s /bin/sh botaudit -c 'sudo -n /usr/sbin/iptables -S' >/dev/null 2>&1; echo "[sudo iptables -S direct] rc=$?"
+t "iptables: chain through a non-root-safe dir is refused (126)"
+a=$(readlink /etc/alternatives/iptables) && cp "$(readlink -f /usr/sbin/iptables)" /tmp/evil && ln -sfn /tmp/evil /etc/alternatives/iptables &&
+  { ssh $O botaudit@127.0.0.1 'iptables -S' >/dev/null 2>&1; echo "tampered rc=$?"; ln -sfn "$a" /etc/alternatives/iptables; rm -f /tmp/evil; }
+readlink /etc/alternatives/iptables
 pkill sshd; grep -o '"phase":"[a-z]*"\|"decision":"[a-z]*"\|"key_fp":"SHA256:[A-Za-z0-9]\{6\}' /tmp/syslog.txt | tr '\n' ' '; echo
 
 t "remove: $DEL"

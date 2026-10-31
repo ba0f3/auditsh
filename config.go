@@ -15,11 +15,12 @@ import (
 const internalProcRead = "internal:procread"
 
 type rawRule struct {
-	Name string   `yaml:"name"`
-	Path string   `yaml:"path"`
-	Sudo bool     `yaml:"sudo"`
-	JVM  bool     `yaml:"jvm"`
-	Args []string `yaml:"args"`
+	Name    string   `yaml:"name"`
+	Path    string   `yaml:"path"`
+	Sudo    bool     `yaml:"sudo"`
+	JVM     bool     `yaml:"jvm"`
+	Resolve bool     `yaml:"resolve"`
+	Args    []string `yaml:"args"`
 }
 
 type rawConfig struct {
@@ -32,12 +33,13 @@ type argPattern struct {
 }
 
 type rule struct {
-	Name string
-	Path string
-	Sudo bool
-	JVM  bool // run <Path> (the auditsh-jvm helper) via sudo as the target pid's owner
-	Args []argPattern
-	ID   string // e.g. "ps#1" for logs
+	Name    string
+	Path    string
+	Sudo    bool
+	Resolve bool // path may be a root-owned symlink chain (checkChain); exec the original path
+	JVM     bool // run <Path> (the auditsh-jvm helper) via sudo as the target pid's owner
+	Args    []argPattern
+	ID      string // e.g. "ps#1" for logs
 }
 
 type config struct {
@@ -115,17 +117,21 @@ func parseConfig(b []byte) (*config, error) {
 		if !nameRE.MatchString(r.Name) {
 			return nil, fmt.Errorf("rule %d: bad name %q", i, r.Name)
 		}
-		if r.Path == internalProcRead {
-			if r.Sudo {
+		internal := r.Path == internalProcRead || r.Path == internalFileRead
+		if internal {
+			if r.Sudo || r.Resolve {
 				return nil, fmt.Errorf("rule %d: internal rule cannot use sudo", i)
 			}
 		} else if !filepath.IsAbs(r.Path) || filepath.Clean(r.Path) != r.Path {
 			return nil, fmt.Errorf("rule %d: path must be absolute and clean: %q", i, r.Path)
 		}
-		if r.JVM && (r.Sudo || r.Path == internalProcRead || !jvmTools[r.Name]) {
+		if r.JVM && (r.Sudo || r.Resolve || internal || !jvmTools[r.Name]) {
 			return nil, fmt.Errorf("rule %d: jvm rule must be jcmd/jstat, not sudo/internal", i)
 		}
-		nr := &rule{Name: r.Name, Path: r.Path, Sudo: r.Sudo, JVM: r.JVM}
+		if r.Path == internalFileRead && (len(r.Args) != 1 || !osFiles[r.Args[0]]) {
+			return nil, fmt.Errorf("rule %d: fileread rule needs exactly one fixed os file path", i)
+		}
+		nr := &rule{Name: r.Name, Path: r.Path, Sudo: r.Sudo, JVM: r.JVM, Resolve: r.Resolve}
 		for _, p := range r.Args {
 			re, err := regexp.Compile(`^(?:` + p + `)$`)
 			if err != nil {

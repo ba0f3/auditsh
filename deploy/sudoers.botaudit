@@ -8,3 +8,6 @@ botaudit ALL=(root) NOPASSWD: NOEXEC: /usr/bin/ss -tlnp, /usr/bin/ss -ulnp
 botaudit ALL=(root) NOPASSWD: NOEXEC: /usr/bin/dmesg -T, /usr/bin/dmesg -T --level=err, /usr/bin/dmesg -T --level=err\,warn, /usr/bin/dmesg -T --level=emerg\,alert\,crit\,err\,warn
 # system audit (read-only): effective sshd config, root crontab, nftables ruleset, audit rules.
 botaudit ALL=(root) NOPASSWD: NOEXEC: /usr/sbin/sshd -T, /usr/bin/crontab -l -u root, /usr/sbin/nft list ruleset, /usr/sbin/auditctl -l
+# iptables/ip6tables (read-only). Paths are symlinks; sudo matches the resolved file, auditsh validates
+# the root-owned chain first. "" = no arguments allowed (without it any args would be permitted).
+botaudit ALL=(root) NOPASSWD: NOEXEC: /usr/sbin/iptables -S, /usr/sbin/iptables-save "", /usr/sbin/ip6tables -S, /usr/sbin/ip6tables-save ""

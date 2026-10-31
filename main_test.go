@@ -107,7 +107,7 @@ func TestSystemAuditDenied(t *testing.T) {
 		"sshd", "sshd -T -f /etc/shadow", "sshd -T -C user=root", "sshd -t", "sshd -d",
 		"crontab -l", "crontab -l -u botaudit", "crontab -e -u root", "crontab -r -u root", "crontab -u root -l",
 		"crontab /tmp/x", "nft list ruleset -a", "nft flush ruleset", "nft -f /tmp/x", "nft list tables",
-		"auditctl -l -k x", "auditctl -D", "auditctl -e 0", "auditctl -s", "iptables -S", "cat /etc/os-release",
+		"auditctl -l -k x", "auditctl -D", "auditctl -e 0", "auditctl -s",
 		// pagers / exec
 		"systemctl list-units --failed --pager", "systemctl list-timers --no-pager | less", "less", "more", "pager",
 		"last -n 10 | less", "PAGER=less systemctl list-timers --no-pager",
@@ -532,7 +532,7 @@ func TestSudoersMatchesAllowlist(t *testing.T) {
 		}
 		for _, g := range strings.Split(strings.ReplaceAll(ln[len(pfx):], "\\,", "\x00"), ", ") {
 			g = strings.ReplaceAll(g, "\x00", ",")
-			if strings.ContainsAny(g, "*?[]^$\"") {
+			if strings.ContainsAny(strings.TrimSuffix(g, ` ""`), "*?[]^$\"") {
 				t.Errorf("sudoers wildcard/regex in %q", g)
 			}
 			grants[g] = true
@@ -551,6 +551,9 @@ func TestSudoersMatchesAllowlist(t *testing.T) {
 					t.Errorf("%s: sudo rule with non-literal arg", r.ID)
 				}
 				parts = append(parts, a.literal)
+			}
+			if len(r.Args) == 0 {
+				parts = append(parts, `""`) // sudoers: no args; a bare path would allow any args
 			}
 			g := strings.Join(parts, " ")
 			want[g] = true

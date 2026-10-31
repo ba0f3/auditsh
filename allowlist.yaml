@@ -33,9 +33,6 @@ commands:
   # sudo entries must match deploy/sudoers.botaudit exactly (NOEXEC, no wildcards).
   # '# deb-only' / '# rpm-only' lines are dropped from the other package's copy by pkg.sh;
   # the release allowlist keeps both (a missing binary fails closed at exec time).
-  # Not included: iptables (/usr/sbin/iptables is an alternatives symlink on Debian and Rocky
-  # and auditsh refuses symlinked binaries; `nft list ruleset` shows iptables-nft rules too),
-  # /etc/os-release (internal:procread is hard-limited to /proc; `uname -a` covers the kernel).
   # who: current logins (utmp read).
   - {name: who, path: /usr/bin/who, args: []}
   # last -n N: recent logins from wtmp, bounded to 1..9999 lines.
@@ -56,6 +53,22 @@ commands:
   - {name: crontab, path: /usr/bin/crontab, sudo: true, args: ['-l', '-u', 'root']}
   - {name: nft, path: /usr/sbin/nft, sudo: true, args: ['list', 'ruleset']}
   - {name: auditctl, path: /usr/sbin/auditctl, sudo: true, args: ['-l']}
+  # iptables/ip6tables (old hosts without nft; legacy or nft backend). /usr/sbin/iptables is a
+  # symlink (-> /etc/alternatives/... -> xtables-{nft,legacy}-multi), so `resolve: true`: auditsh
+  # requires every link, every directory and the final binary to be root-owned and not
+  # group/world-writable, then execs the ORIGINAL path (sudo matches it; the multi-call binary
+  # dispatches on argv[0]). Missing iptables = clean failure. No args = sudoers `""`.
+  - {name: iptables, path: /usr/sbin/iptables, sudo: true, resolve: true, args: ['-S']}
+  - {name: iptables-save, path: /usr/sbin/iptables-save, sudo: true, resolve: true, args: []}
+  - {name: ip6tables, path: /usr/sbin/ip6tables, sudo: true, resolve: true, args: ['-S']}
+  - {name: ip6tables-save, path: /usr/sbin/ip6tables-save, sudo: true, resolve: true, args: []}
+  # OS identification, served by auditsh itself (internal:fileread): only these four exact paths,
+  # root-owned symlink chain (e.g. /etc/os-release -> /usr/lib/os-release), world-readable, 64 KiB cap.
+  - {name: cat, path: 'internal:fileread', args: ['/etc/os-release']}
+  - {name: cat, path: 'internal:fileread', args: ['/etc/redhat-release']}
+  - {name: cat, path: 'internal:fileread', args: ['/etc/debian_version']}
+  - {name: cat, path: 'internal:fileread', args: ['/etc/lsb-release']}
+  - {name: lsb_release, path: /usr/bin/lsb_release, args: ['-a']}  # deb-only
 # ---- BEGIN Java/JVM diagnostics (jvm: true) ----
 # path = root-owned helper /usr/local/sbin/auditsh-jvm, run as `sudo -n -u <pid owner> -- helper <name> <args>`.
 # auditsh checks /proc/<pid>/status (Name java, single non-root uid); sudo only permits users configured with

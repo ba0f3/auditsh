@@ -92,8 +92,25 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 		return res, nil
 	}
 
+	if r.Path == internalFileRead {
+		if len(args) != 1 {
+			return result{exit: 2}, errors.New("fileread needs one path")
+		}
+		err := osFileRead(args[0], cw, o.binOwnerUID)
+		res := result{bytes: cw.n, truncated: cw.truncated}
+		if err != nil {
+			res.exit = 1
+			fmt.Fprintln(os.Stderr, "auditsh: read failed")
+		}
+		return res, nil
+	}
+
 	if o.checkBin {
-		if err := checkTree(r.Path, o.binOwnerUID); err != nil {
+		check := func(p string, uid uint32) error { return checkTree(p, uid) }
+		if r.Resolve {
+			check = func(p string, uid uint32) error { _, err := checkChain(p, uid); return err }
+		}
+		if err := check(r.Path, o.binOwnerUID); err != nil {
 			return result{exit: 126}, fmt.Errorf("binary check: %w", err)
 		}
 		if r.Sudo {
