@@ -52,7 +52,28 @@ it clones the repo into a temp dir, checks out the commit, and builds with
 It then prints the `vcs.revision`/`vcs.modified` values from `go version -m` and the sha256.
 Two builds of the same commit give identical hashes.
 
-## Install (as root)
+## Quick install (release binary, as root)
+Releases (`v*` tags) are built by `.github/workflows/release.yml` with `build.sh` (go1.27.3, `-trimpath`, CGO off)
+for linux/amd64 and linux/arm64, and ship `SHA256SUMS` plus a GitHub build-provenance attestation.
+`install.sh` downloads the binary and config for one tag, checks sha256 (fails closed), and, when an authenticated `gh` is present,
+checks the attestation (`--require-attestation` makes that mandatory). It then performs the manual steps below, validates with
+`visudo -cf` and `sshd -t`/`sshd -T`, rolls sshd files back on failure, and reloads sshd. It is idempotent; `--dry-run` and `--uninstall` are supported.
+Keys must be bare public keys; the installer adds `restrict,command="/usr/local/sbin/auditsh"` (and `,from=` with `--from`).
+
+Recommended (download, verify, read, then run; replace `<tag>`):
+```sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/ba0f3/auditsh/releases/download/<tag>/install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/ba0f3/auditsh/releases/download/<tag>/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS && gh attestation verify install.sh --repo ba0f3/auditsh
+less install.sh
+sudo AUDITSH_VERSION=<tag> sh install.sh --key 'ssh-ed25519 AAAA... agent@example' --from 192.0.2.10
+```
+One line (trusts GitHub TLS only; pin a tag, not a branch):
+```sh
+curl -fsSL https://raw.githubusercontent.com/ba0f3/auditsh/<tag>/install.sh | sudo AUDITSH_VERSION=<tag> sh -s -- --key 'ssh-ed25519 AAAA... agent@example'
+```
+
+## Install (manual, as root)
 ```sh
 make build
 install -o root -g root -m 0755 dist/auditsh /usr/local/sbin/auditsh
