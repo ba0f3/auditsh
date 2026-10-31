@@ -6,15 +6,16 @@
 set -eu
 cd "$(git rev-parse --show-toplevel)"
 fail=0; n=0
+Q="[\"']?"   # optional YAML key quotes: uses / "uses" / 'uses'
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 { ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null || true
   git ls-files -- '*action.yml' '*action.yaml'; } | sort -u > "$tmp/files"
 [ -s "$tmp/files" ] || { echo "FAIL no workflow files"; exit 1; }
 # Inline maps (`- {uses: x}` / `{ name: a, uses: x }`) are not parsed here: refuse them.
-if xargs grep -nE '\{[^}]*uses[[:space:]]*:' < "$tmp/files"; then echo "FAIL inline-map uses: above; use block style"; fail=1; fi
-xargs grep -hE '^[[:space:]]*-?[[:space:]]*uses[[:space:]]*:' < "$tmp/files" | sort -u > "$tmp/uses" || true
+if xargs grep -nE '\{[^}]*'"$Q"'uses'"$Q"'[[:space:]]*:' < "$tmp/files"; then echo "FAIL inline-map uses: above; use block style"; fail=1; fi
+xargs grep -hE '^[[:space:]]*-?[[:space:]]*'"$Q"'uses'"$Q"'[[:space:]]*:' < "$tmp/files" | sort -u > "$tmp/uses" || true
 while IFS= read -r line; do
-  ref=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*-?[[:space:]]*uses[[:space:]]*:[[:space:]]*//; s/^["'\'']//; s/["'\'']([[:space:]]+#.*)?$/\1/')
+  ref=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*-?[[:space:]]*'"$Q"'uses'"$Q"'[[:space:]]*:[[:space:]]*//; s/^["'\'']//; s/["'\'']([[:space:]]+#.*)?$/\1/')
   case $ref in
     ./*) continue ;;
     docker://*)

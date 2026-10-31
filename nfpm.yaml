@@ -41,7 +41,17 @@ contents:
   - src: deploy/sshd_config.d/50-botaudit.conf
     dst: /usr/share/auditsh/50-botaudit.conf
     file_info: {mode: 0644, owner: root, group: root}
+  # rpm does not own implicit parent dirs; own them so rpm -e leaves no empty dirs (dpkg tracks them itself).
+  - dst: /etc/auditsh
+    type: dir
+    packager: rpm
+    file_info: {mode: 0755, owner: root, group: root}
+  - dst: /usr/share/auditsh
+    type: dir
+    packager: rpm
+    file_info: {mode: 0755, owner: root, group: root}
 scripts:
+  preinstall: packaging/preinstall.sh
   postinstall: packaging/postinstall.sh
   preremove: packaging/preremove.sh
   postremove: packaging/postremove.sh

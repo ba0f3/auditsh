@@ -4,7 +4,7 @@
 # byte-reproducible. nfpm is pinned and its tarball sha256-verified (or set NFPM=/path/to/verified/nfpm).
 # rpm variants use /usr/sbin/ss (RHEL/Rocky/Alma/Fedora path); deb keeps /usr/bin/ss (Debian usrmerge).
 set -eu
-export PATH="$PATH" LC_ALL=C
+export PATH="$PATH:/usr/sbin:/sbin" LC_ALL=C
 NFPM_VERSION=2.48.0
 NFPM_SHA256=6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750 # nfpm_2.48.0_Linux_x86_64.tar.gz
 rev=$(git rev-parse "${1:-HEAD}")
@@ -31,6 +31,11 @@ mkdir -p "$BINDIR/rpm" dist
 sed 's#/usr/bin/ss #/usr/sbin/ss #g' "$tmp/src/deploy/sudoers.botaudit" > "$BINDIR/rpm/sudoers.botaudit"
 sed 's#path: /usr/bin/ss,#path: /usr/sbin/ss,#' "$tmp/src/allowlist.yaml" > "$BINDIR/rpm/allowlist.yaml"
 mkdir -p "$tmp/out"
+# sudoers is unpacked before postinst can run visudo -c: validate both variants here, before packaging.
+command -v visudo >/dev/null 2>&1 || { echo "visudo not found (install sudo)" >&2; exit 1; }
+visudo -cf "$tmp/src/deploy/sudoers.botaudit" >&2
+visudo -cf "$BINDIR/rpm/sudoers.botaudit" >&2
+grep -q '/usr/sbin/ss -tlnp' "$BINDIR/rpm/sudoers.botaudit" || { echo "rpm sudoers ss rewrite failed" >&2; exit 1; }
 for ARCH in amd64 arm64; do
   GOOS=linux GOARCH=$ARCH OUT=$BINDIR/auditsh ./build.sh "$rev" >&2
   for p in deb rpm; do

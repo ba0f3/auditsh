@@ -115,7 +115,11 @@ auditsh-setup --local --key 'ssh-ed25519 AAAA... agent@x' [--from 192.0.2.10] [-
 AcceptEnv, runs the `sshd -t`/`sshd -T` checks and reloads sshd. On any failure it rolls back.
 `apt remove` / `dpkg -r` / `rpm -e` (not upgrade) runs `auditsh-setup --uninstall --package` first. That
 removes the drop-in, the keys and the user, restores AcceptEnv and cleans `/etc/shells` and cron/at deny.
-`dpkg --purge` also drops the allowlist. On RHEL-family systems `ss` is `/usr/sbin/ss`, so the rpm ships
+`dpkg --purge` also drops the allowlist. The package refuses to install (preinst/%pre, before
+any file is placed) if uid/gid 990 belong to someone other than `botaudit`. After an upgrade, if you had
+edited `/etc/auditsh/allowlist.yaml`, your copy is kept and the new default is written beside it as
+`allowlist.yaml.dpkg-dist` (deb) or `allowlist.yaml.rpmnew` (rpm): diff and merge it by hand, then
+delete it. Sudoers is always replaced by the packaged rules. On RHEL-family systems `ss` is `/usr/sbin/ss`, so the rpm ships
 sudoers and allowlist with `/usr/sbin/ss`; the deb keeps Debian's `/usr/bin/ss`. Tested in chroots
 (Debian 13, Rocky 9.8) with `tests/pkg-test.sh`.
 
