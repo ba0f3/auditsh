@@ -112,16 +112,20 @@ auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null; echo "rc=$?"; for 
 t "P2: failed --local on a PRE-EXISTING, modified botaudit rolls the account back exactly"
 mkdir -p /var/lib/ba-alt /home/botaudit/.ssh; : > /home/botaudit/.ssh/authorized_keys
 chown -R botaudit:botaudit /home/botaudit/.ssh; chmod 0700 /home/botaudit/.ssh; chmod 0600 /home/botaudit/.ssh/authorized_keys
-chown botaudit /home/botaudit; chmod 0750 /home/botaudit
-usermod -s /bin/sh -d /var/lib/ba-alt botaudit
-# shellcheck disable=SC2016  # literal fake hash
-usermod -p '$6$p2test$notarealhashbutanopaquevalue0123456789' botaudit   # unlocked, distinct from '!'/'*'
 acct() { getent passwd botaudit; getent shadow botaudit | sha256sum | cut -c1-16; stat -c '%u:%g %a %n' /home/botaudit /home/botaudit/.ssh /home/botaudit/.ssh/authorized_keys; }
-acct > /tmp/a0; snap > /tmp/p0
-AUDITSH_TEST_FAIL_AFTER=setup_account auditsh-setup --local --test-hooks --key "$(cat /root/tk.pub)" >/tmp/f 2>&1; echo "forced-failure rc=$?"; grep -E 'test hook|roll' /tmp/f
-acct > /tmp/a1; snap > /tmp/p1
-diff /tmp/a0 /tmp/a1 && echo "ACCOUNT RESTORED (shell, home, password field, home/.ssh/authorized_keys owner+mode)"
-diff /tmp/p0 /tmp/p1 && echo "files unchanged"
+# shellcheck disable=SC2016  # literal fake hashes
+for pw in '$6$p2test$notarealhashbutanopaquevalue0123456789' '!$6$p2test$lockedhash' '!' '*' ''; do
+  usermod -s /bin/sh -d /var/lib/ba-alt botaudit
+  chown botaudit /home/botaudit; chmod 0750 /home/botaudit; chown -R botaudit:botaudit /home/botaudit/.ssh
+  printf 'botaudit:%s\n' "$pw" | chpasswd -e
+  acct > /tmp/a0; snap > /tmp/p0
+  AUDITSH_TEST_FAIL_AFTER=setup_account auditsh-setup --local --test-hooks --key "$(cat /root/tk.pub)" >/tmp/f 2>&1; rc=$?
+  acct > /tmp/a1; snap > /tmp/p1
+  r=RESTORED; diff -q /tmp/a0 /tmp/a1 >/dev/null || r=CHANGED; diff -q /tmp/p0 /tmp/p1 >/dev/null || r="$r files-CHANGED"
+  case $pw in '') k='empty' ;; '!$'*) k='locked-hash' ;; '$'*) k='hash' ;; *) k="'$pw'" ;; esac
+  echo "[$k] forced-failure rc=$rc account $r; $(grep -c ERROR: /tmp/f) error line(s), hook=$(grep -c 'test hook' /tmp/f)"
+  ! grep -q 'p2test' /tmp/f || echo "HASH LEAKED TO OUTPUT"
+done
 AUDITSH_TEST_FAIL_AFTER=setup_account auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null 2>&1; echo "env without --test-hooks ignored rc=$?"
 getent passwd botaudit | cut -d: -f6,7; passwd -S botaudit | cut -d' ' -f2; stat -c '%U:%G %a %n' /home/botaudit /home/botaudit/.ssh
 rm -rf /home/botaudit/.ssh; rmdir /var/lib/ba-alt

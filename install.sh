@@ -299,6 +299,7 @@ backup_account() {
   if [ -e "$HOME_DIR/.ssh" ]; then find "$HOME_DIR/.ssh" -exec stat -c '%u:%g %a %n' -- {} + >> "$BAK/account.perms"; fi
   pw=$(getent passwd "$USER_NAME") || return 0
   ACCT_EXISTED=1
+  command -v chpasswd >/dev/null 2>&1 || die "chpasswd not found: cannot guarantee a password-field rollback for $USER_NAME"
   ACCT_HOME=$(printf '%s' "$pw" | cut -d: -f6); ACCT_SHELL=$(printf '%s' "$pw" | cut -d: -f7)
   (umask 077; getent shadow "$USER_NAME" | cut -d: -f2 > "$BAK/account.shadow") || die "cannot read shadow entry for $USER_NAME"
   chmod 0600 "$BAK/account.shadow"
@@ -307,8 +308,14 @@ restore_account() {
   [ "${ACCT_EXISTED:-0}" = 1 ] || return 0
   usermod --shell "$ACCT_SHELL" --home "$ACCT_HOME" "$USER_NAME" || warn "could not restore shell/home of $USER_NAME"
   if [ -f "$BAK/account.shadow" ]; then
-    # usermod -p takes the saved field verbatim (incl. '!' lock prefix); output discarded so nothing echoes it.
-    usermod -p "$(cat "$BAK/account.shadow")" "$USER_NAME" >/dev/null 2>&1 || warn "could not restore password field of $USER_NAME"
+    # chpasswd -e writes the saved field verbatim from stdin ('!'/'*'/'!!' lock prefixes and an empty field
+    # included), so the hash never appears in argv. No argv fallback: if it fails, say so loudly.
+    if ! command -v chpasswd >/dev/null 2>&1; then
+      say "ERROR: chpasswd not found; password field of $USER_NAME NOT restored "
+    elif ! { printf '%s:' "$USER_NAME"; cat "$BAK/account.shadow"; } | chpasswd -e >/dev/null 2>&1 \
+      || [ "$(getent shadow "$USER_NAME" | cut -d: -f2)" != "$(cat "$BAK/account.shadow")" ]; then
+      say "ERROR: chpasswd -e failed; password field of $USER_NAME NOT restored, fix it by hand"
+    fi
     rm -f "$BAK/account.shadow"
   fi
   while IFS= read -r l; do
