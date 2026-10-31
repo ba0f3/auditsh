@@ -95,7 +95,7 @@ if [ "$MODE" = account ]; then
   [ "$DRY" = 0 ] || die "--account-only has no dry-run"
   check_uid_free
   setup_account
-  if ! visudo -c >/dev/null; then rm -f "$SUDOERS"; die "visudo -c failed; removed $SUDOERS"; fi
+  if ! visudo -c >/dev/null; then rm -f "$SUDOERS" "$SUDOERS_JVM"; die "visudo -c failed; removed $SUDOERS $SUDOERS_JVM"; fi
   say "account $USER_NAME ready; SSH access stays disabled until: auditsh-setup --local --key '...'"
   exit 0
 fi
@@ -194,9 +194,7 @@ check_uid_free() {
 acfail() { if [ "${AC_POST:-0}" = 1 ]; then post_create_fail "$*"; fi; die "$*"; }
 post_create_fail() {
   rm -f "$SUDOERS" "$SUDOERS_JVM"
-  if [ "${CREATED_USER:-0}" = 1 ]; then userdel "$USER_NAME" 2>/dev/null || true; CREATED_USER=0; fi
-  if [ "${CREATED_GROUP:-0}" = 1 ]; then groupdel "$USER_NAME" 2>/dev/null || true; CREATED_GROUP=0; fi
-  die "$1; account created by this run removed, removed $SUDOERS $SUDOERS_JVM"
+  die "$1; removed $SUDOERS $SUDOERS_JVM (the account this run created is removed on exit)"
 }
 # BEGIN account-check (byte-identical in install.sh and packaging/preinstall.sh; tests/account-check-test.sh)
 # account_check NAME [PIN]: an existing NAME account/group must be safe to grant; calls acfail MSG otherwise.
@@ -264,6 +262,7 @@ setup_account() {
   # Re-check what the system actually assigned (unique uid/gid, system range, no supplementary groups).
   # On failure post_create_fail removes sudoers and the user/group this run created, then exits non-zero.
   AC_POST=1; check_account_sane; AC_POST=0
+  test_fail_after account_recheck
   pam=yes
   if command -v sshd >/dev/null 2>&1; then
     pam=$(sshd -T -C "user=$USER_NAME,host=x,addr=192.0.2.10" 2>/dev/null | awk '$1=="usepam"{print $2}')
@@ -334,7 +333,28 @@ sshd_bin() { if command -v sshd >/dev/null 2>&1; then command -v sshd; else die 
 
 on_exit() {
   if [ "$1" != 0 ] && [ "${STAGED:-0}" = 1 ]; then rollback; fi
+  if [ "$1" != 0 ] && [ "$MODE" = account ]; then account_fail_cleanup; fi
   rm -rf "${TMP:-/nonexistent}"
+}
+
+# --account-only (postinst) failed after the package's sudoers went live: fail closed. Sudoers first, then
+# only the user/group THIS run created. Never kills processes by uid (the uid may alias another account).
+account_fail_cleanup() {
+  rm -f "$SUDOERS" "$SUDOERS_JVM"
+  printf '%s\n' "auditsh-install: ERROR: --account-only failed; removed $SUDOERS $SUDOERS_JVM" >&2
+  if [ "${CREATED_USER:-0}" = 1 ]; then
+    if userdel "$USER_NAME"; then CREATED_USER=0
+    else
+      usermod -s /usr/sbin/nologin "$USER_NAME" 2>/dev/null || true
+      usermod -L -e 1 "$USER_NAME" 2>/dev/null || true
+      printf '%s\n' "auditsh-install: ERROR: userdel $USER_NAME failed; account set to nologin, locked and expired. Remove it by hand: userdel $USER_NAME; groupdel $USER_NAME" >&2
+      return 0
+    fi
+  fi
+  if [ "${CREATED_GROUP:-0}" = 1 ] && getent group "$USER_NAME" >/dev/null; then
+    groupdel "$USER_NAME" || printf '%s\n' "auditsh-install: ERROR: groupdel $USER_NAME failed; remove it by hand" >&2
+  fi
+  CREATED_GROUP=0
 }
 
 reload_sshd() {

@@ -45,12 +45,21 @@ t "N-1: postinst re-check fails on the account it just created -> sudoers remove
 # the post-create re-check in auditsh-setup --account-only must fail closed.
 groupadd staleg; sed -i 's/^\(staleg:[^:]*:[0-9]*:\)$/\1botaudit/' /etc/group; grep '^staleg:' /etc/group
 $ADD; echo "rc=$?"
-ls /etc/sudoers.d/botaudit /etc/sudoers.d/botaudit-jvm 2>&1 | sed 's/^/sudoers: /'
+for f in /etc/sudoers.d/botaudit /etc/sudoers.d/botaudit-jvm; do if [ -e "$f" ]; then echo "sudoers: $f present"; else echo "sudoers: $f absent"; fi; done
 getent passwd botaudit || echo "no botaudit user"; getent group botaudit || echo "no botaudit group"
 if command -v dpkg >/dev/null 2>&1; then dpkg-query -W -f='status: ${db:Status-Abbrev}\n' auditsh 2>&1; else rpm -q auditsh; fi
 $DEL >/dev/null 2>&1; $PURGE >/dev/null 2>&1; echo "cleanup rc=$?"
 groupdel staleg; userdel botaudit 2>/dev/null; groupdel botaudit 2>/dev/null
 snap > /tmp/q5; diff /tmp/s0 /tmp/q5 && echo "back to pre-test snapshot"
+
+t "P-2: --account-only failing AFTER the re-check (test hook) -> sudoers removed first, created account removed"
+$ADD >/dev/null 2>&1; echo "install rc=$?"; userdel botaudit; groupdel botaudit 2>/dev/null
+getent passwd botaudit || echo "botaudit removed for the test"
+AUDITSH_TEST_FAIL_AFTER=account_recheck auditsh-setup --account-only --test-hooks; echo "account-only rc=$?"
+for f in /etc/sudoers.d/botaudit /etc/sudoers.d/botaudit-jvm; do if [ -e "$f" ]; then echo "sudoers: $f present"; else echo "sudoers: $f absent"; fi; done
+getent passwd botaudit || echo "no botaudit user"; getent group botaudit || echo "no botaudit group"
+$DEL >/dev/null 2>&1; $PURGE >/dev/null 2>&1; echo "cleanup rc=$?"; userdel botaudit 2>/dev/null; groupdel botaudit 2>/dev/null
+snap > /tmp/q6; diff /tmp/s0 /tmp/q6 && echo "back to pre-test snapshot"
 
 t "pre-existing sane botaudit keeps its ids"
 groupadd --system -g 985 botaudit; useradd --system -M -u 985 -g botaudit botaudit
