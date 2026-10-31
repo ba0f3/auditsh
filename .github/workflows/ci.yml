@@ -32,6 +32,6 @@ jobs:
             GOARCH=$arch OUT=/tmp/b-$arch ./build.sh "$GITHUB_SHA"
             cmp /tmp/a-$arch /tmp/b-$arch
           done
-      - run: shellcheck install.sh build.sh tests/chroot-test.sh .github/scripts/check-action-pins.sh
+      - run: shellcheck install.sh build.sh pkg.sh packaging/*.sh tests/chroot-test.sh tests/pkg-test.sh .github/scripts/check-action-pins.sh
       - name: Verify action SHA pins match their tags
         run: .github/scripts/check-action-pins.sh

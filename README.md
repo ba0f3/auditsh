@@ -84,6 +84,41 @@ curl --proto '=https' --tlsv1.2 -fsSL https://github.com/ba0f3/auditsh/releases/
 ```
 `tests/chroot-test.sh` exercises the installer in a throwaway Debian chroot against a fake local release (it replaces curl there). Never run it on a real host.
 
+## Packages (deb/rpm, as root)
+
+Releases also carry `auditsh_<ver>-1_{amd64,arm64}.deb` and `auditsh-<ver>-1.{x86_64,aarch64}.rpm`, listed in
+`SHA256SUMS` and covered by the build attestation. Verify them the same way as the binary
+(`sha256sum -c --ignore-missing SHA256SUMS` after checking the SHA256SUMS hash, or `gh attestation verify`).
+Build them locally with `./pkg.sh [rev]`: reproducible binaries from `build.sh`, nfpm pinned with a
+sha256-checked tarball, `SOURCE_DATE_EPOCH` = commit time, so a rebuild is byte-identical.
+
+Installing the package does **not** open SSH access. It installs:
+
+| path | notes |
+|---|---|
+| `/usr/local/sbin/auditsh` | 0755 root (same path as ForceCommand, login shell, key `command=`) |
+| `/etc/auditsh/allowlist.yaml` | config, noreplace (local edits kept on upgrade) |
+| `/etc/sudoers.d/botaudit` | 0440, package-owned (replaced on upgrade, removed on remove) |
+| `/usr/share/auditsh/50-botaudit.conf` | sshd drop-in, shipped **disabled** |
+| `/usr/sbin/auditsh-setup` | this repo's `install.sh` |
+
+The postinst runs `auditsh-setup --account-only`: user/group `botaudit` uid/gid 990, shell auditsh (added to
+`/etc/shells`), locked password, root-owned home, cron/at deny. Then `visudo -c`; if that fails, the sudoers
+file is removed and the postinst fails. To enable access:
+
+```sh
+apt install ./auditsh_X.Y.Z-1_amd64.deb        # or: dnf install ./auditsh-X.Y.Z-1.x86_64.rpm
+auditsh-setup --local --key 'ssh-ed25519 AAAA... agent@x' [--from 192.0.2.10] [--dry-run]
+```
+
+`--local` uses the packaged files (no download). It installs the key and the drop-in, comments out
+AcceptEnv, runs the `sshd -t`/`sshd -T` checks and reloads sshd. On any failure it rolls back.
+`apt remove` / `dpkg -r` / `rpm -e` (not upgrade) runs `auditsh-setup --uninstall --package` first. That
+removes the drop-in, the keys and the user, restores AcceptEnv and cleans `/etc/shells` and cron/at deny.
+`dpkg --purge` also drops the allowlist. On RHEL-family systems `ss` is `/usr/sbin/ss`, so the rpm ships
+sudoers and allowlist with `/usr/sbin/ss`; the deb keeps Debian's `/usr/bin/ss`. Tested in chroots
+(Debian 13, Rocky 9.8) with `tests/pkg-test.sh`.
+
 ## Install (manual, as root)
 ```sh
 make build
