@@ -11,7 +11,7 @@
 # band) or --require-attestation (authenticated `gh` must verify the GitHub build provenance) is
 # required; both may be given. Every asset is then checked against SHA256SUMS; any mismatch aborts.
 # Env equivalents: AUDITSH_VERSION, AUDITSH_SHA256, AUDITSH_REQUIRE_ATTESTATION=1, AUDITSH_KEY,
-# AUDITSH_KEY_FILE, AUDITSH_FROM, AUDITSH_UID (default 990).
+# AUDITSH_KEY_FILE, AUDITSH_FROM, AUDITSH_UID (optional pin; default: system-assigned).
 # Package mode (deb/rpm ship this script as /usr/sbin/auditsh-setup):
 #   auditsh-setup --local --key '...'   use the packaged binary/allowlist/sudoers, enable SSH (no download)
 #   auditsh-setup --account-only        postinst: create/refresh the botaudit account only (no SSH access)
@@ -48,7 +48,7 @@ KEY=${AUDITSH_KEY:-}
 KEY_FILE=${AUDITSH_KEY_FILE:-}
 FROM=${AUDITSH_FROM:-}
 REQ_ATTEST=${AUDITSH_REQUIRE_ATTESTATION:-0}
-FIXED_UID=${AUDITSH_UID:-990}
+FIXED_UID=${AUDITSH_UID:-}
 DRY=0
 TEST_HOOKS=0
 MODE=install
@@ -85,7 +85,7 @@ fi
 TMP=$(mktemp -d)
 trap 'on_exit $?' EXIT
 trap 'exit 130' INT TERM HUP
-printf '%s' "$FIXED_UID" | grep -Eq '^[0-9]{2,5}$' || die "bad --uid"
+[ -z "$FIXED_UID" ] || printf '%s' "$FIXED_UID" | grep -Eq '^[0-9]{2,5}$' || die "bad --uid"
 
 if [ "$MODE" = uninstall ]; then uninstall; exit 0; fi
 if [ "$MODE" = account ]; then
@@ -143,7 +143,7 @@ if [ "$DRY" = 1 ]; then
   if [ -n "$JAVA_USERS" ]; then say "would write $SUDOERS_JVM and $JAVA_USERS_FILE for java user(s) $JAVA_USERS"
   else say "would remove $SUDOERS_JVM and $JAVA_USERS_FILE if present (no --java-user = revoke)"; fi
   say "would install $SSHD_DROPIN, $KEYS_FILE ($NKEYS key line(s))"
-  id "$USER_NAME" >/dev/null 2>&1 || say "would create user $USER_NAME uid/gid $FIXED_UID home $HOME_DIR shell $BIN"
+  id "$USER_NAME" >/dev/null 2>&1 || say "would create user $USER_NAME uid/gid ${FIXED_UID:-system-assigned} home $HOME_DIR shell $BIN"
   say "would comment out AcceptEnv, run sshd -t/-T checks, reload sshd"
   notes; say "dry-run done, nothing changed"; exit 0
 fi
@@ -180,13 +180,36 @@ say "done"
 }
 
 check_uid_free() {
+  check_account_sane
+  [ -n "$FIXED_UID" ] || return 0
   if ! id "$USER_NAME" >/dev/null 2>&1; then
     if getent passwd "$FIXED_UID" >/dev/null; then die "uid $FIXED_UID in use; pass --uid N"; fi
     if getent group "$FIXED_UID" >/dev/null; then die "gid $FIXED_UID in use; pass --uid N"; fi
   fi
 }
 
-# botaudit: fixed uid/gid, shell auditsh (listed in /etc/shells), locked, root-owned home, no cron/at.
+# An existing botaudit keeps its ids but must not be uid/gid 0, must have a system uid
+# (SYS_UID_MIN..SYS_UID_MAX, fallback 100..999) and primary group botaudit. Same rules as packaging/preinstall.sh.
+check_account_sane() {
+  lo=$(awk '$1=="SYS_UID_MIN"{print $2}' /etc/login.defs 2>/dev/null) || true
+  hi=$(awk '$1=="SYS_UID_MAX"{print $2}' /etc/login.defs 2>/dev/null) || true
+  case "$lo" in ''|*[!0-9]*) lo=100 ;; esac
+  case "$hi" in ''|*[!0-9]*) hi=999 ;; esac
+  gg=""
+  if bg=$(getent group "$USER_NAME"); then
+    gg=$(printf '%s' "$bg" | cut -d: -f3)
+    case "$gg" in ''|*[!0-9]*|0) die "group $USER_NAME has gid '$gg' (0 or invalid)" ;; esac
+  fi
+  if bu=$(getent passwd "$USER_NAME"); then
+    uu=$(printf '%s' "$bu" | cut -d: -f3); ug=$(printf '%s' "$bu" | cut -d: -f4)
+    case "$uu" in ''|*[!0-9]*|0) die "user $USER_NAME has uid '$uu' (0 or invalid)" ;; esac
+    case "$ug" in ''|*[!0-9]*|0) die "user $USER_NAME has primary gid '$ug' (0 or invalid)" ;; esac
+    [ "$uu" -ge "$lo" ] && [ "$uu" -le "$hi" ] || die "user $USER_NAME uid $uu outside system range $lo..$hi"
+    [ -n "$gg" ] && [ "$ug" = "$gg" ] || die "user $USER_NAME primary gid $ug is not group $USER_NAME"
+  fi
+}
+
+# botaudit: system uid/gid (system-assigned unless --uid), shell auditsh (listed in /etc/shells), locked, root-owned home, no cron/at.
 setup_account() {
   command -v pkill >/dev/null 2>&1 || die "pkill not found: cannot stop $USER_NAME processes before touching its home"
   # Early refusal (before any change); the authoritative checks follow once HOME is root-owned.
@@ -195,8 +218,14 @@ setup_account() {
   if id "$USER_NAME" >/dev/null 2>&1; then
     usermod --shell "$BIN" --home "$HOME_DIR" "$USER_NAME"
   else
-    getent group "$USER_NAME" >/dev/null || groupadd --system --gid "$FIXED_UID" "$USER_NAME"
-    useradd --system --uid "$FIXED_UID" --gid "$USER_NAME" --no-create-home --home-dir "$HOME_DIR" --shell "$BIN" "$USER_NAME"
+    if [ -n "$FIXED_UID" ]; then
+      getent group "$USER_NAME" >/dev/null || groupadd --system --gid "$FIXED_UID" "$USER_NAME"
+      set -- --uid "$FIXED_UID"
+    else
+      getent group "$USER_NAME" >/dev/null || groupadd --system "$USER_NAME"
+      set --
+    fi
+    useradd --system "$@" --gid "$USER_NAME" --no-create-home --home-dir "$HOME_DIR" --shell "$BIN" "$USER_NAME"
     CREATED_USER=1
   fi
   pam=yes

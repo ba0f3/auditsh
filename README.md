@@ -151,7 +151,7 @@ and the binaries with `build.sh`. A separate `attest` job adds GitHub build prov
 Every asset is then checked against SHA256SUMS. Key lines are checked with `ssh-keygen -lf` and get
 `restrict,command="/usr/local/sbin/auditsh"` (plus `,from=` with `--from`). Before writing anything it validates sudoers (`visudo -cf`) and the existing sshd
 config (`sshd -t`). After writing it checks `sshd -t`/`sshd -T`. On any failure it rolls back every file it touched and removes a user it created.
-botaudit gets the fixed uid/gid 990 (`--uid N` to change). The installer is idempotent and supports `--dry-run`/`--uninstall`. Uninstall also
+botaudit gets a system uid/gid picked by `useradd --system` (`--uid N` pins one; it must be free). An existing botaudit keeps its ids. The installer is idempotent and supports `--dry-run`/`--uninstall`. Uninstall also
 restores the `AcceptEnv` lines the installer commented out (marked `# auditsh-disabled:`).
 
 Recommended (download, verify, read, then run):
@@ -189,7 +189,7 @@ Installing the package does **not** open SSH access. It installs:
 | `/usr/sbin/auditsh-setup` | this repo's `install.sh` |
 | `/usr/local/sbin/auditsh-jvm` | 0755 root, JVM helper (unused until `--java-user`) |
 
-The postinst runs `auditsh-setup --account-only`: user/group `botaudit` uid/gid 990, shell auditsh (added to
+The postinst runs `auditsh-setup --account-only`: user/group `botaudit` (system-assigned uid/gid if new; an existing account keeps its ids), shell auditsh (added to
 `/etc/shells`), locked password, root-owned home, cron/at deny. Then `visudo -c`; if that fails, the sudoers
 file is removed and the postinst fails. To enable access:
 
@@ -203,7 +203,7 @@ AcceptEnv, runs the `sshd -t`/`sshd -T` checks and reloads sshd. On any failure 
 `apt remove` / `dpkg -r` / `rpm -e` (not upgrade) runs `auditsh-setup --uninstall --package` first. That
 removes the drop-in, the keys and the user, restores AcceptEnv and cleans `/etc/shells` and cron/at deny.
 `dpkg --purge` also drops the allowlist. The package refuses to install (preinst/%pre, before
-any file is placed) if uid/gid 990 belong to someone other than `botaudit`. After an upgrade, if you had
+any file is placed) if an existing `botaudit` looks wrong: uid or gid 0, uid outside `SYS_UID_MIN..SYS_UID_MAX` from `/etc/login.defs` (fallback 100..999), or primary group not `botaudit`. After an upgrade, if you had
 edited `/etc/auditsh/allowlist.yaml`, your copy is kept and the new default is written beside it as
 `allowlist.yaml.dpkg-dist` (deb) or `allowlist.yaml.rpmnew` (rpm): diff and merge it by hand, then
 delete it. Sudoers is always replaced by the packaged rules. On RHEL-family systems `ss` is `/usr/sbin/ss`, so the rpm ships

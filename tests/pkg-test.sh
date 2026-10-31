@@ -17,17 +17,31 @@ else
 fi
 snap > /tmp/s0
 
-t "preinst refuses squatted uid/gid 990 before unpacking (deb preinst / rpm %pre)"
-for case in "useradd -M -u 990 squat" "groupadd -g 990 squatg" "useradd -M -u 991 botaudit"; do
+t "preinst refuses a bad pre-existing botaudit before unpacking (deb preinst / rpm %pre)"
+for case in "useradd -M -o -u 0 -g 0 botaudit" "useradd -M -U -u 1500 botaudit" "useradd -M -u 991 -g 0 botaudit" "useradd -M -u 992 -g users botaudit"; do
   $case; snap > /tmp/q0
   $ADD; echo "[$case] install rc=$?"
   left=""; for f in /usr/local/sbin/auditsh /etc/sudoers.d/botaudit /usr/sbin/auditsh-setup /etc/auditsh /usr/share/auditsh; do [ -e "$f" ] && left="$left $f"; done
   echo "leftover package paths:${left:- none}"
   if command -v dpkg >/dev/null 2>&1; then dpkg-query -W -f='status: ${db:Status-Abbrev}\n' auditsh 2>&1; else rpm -q auditsh; fi
   snap > /tmp/q1; diff /tmp/q0 /tmp/q1 && echo "unchanged"
-  userdel squat 2>/dev/null; userdel botaudit 2>/dev/null; groupdel squatg 2>/dev/null; groupdel botaudit 2>/dev/null
+  userdel -f botaudit 2>/dev/null; groupdel botaudit 2>/dev/null
 done
 snap > /tmp/q2; diff /tmp/s0 /tmp/q2 && echo "back to pre-test snapshot"
+
+t "gid/uid 990 owned by others: install works with system-assigned ids, then remove"
+groupadd -g 990 docker990; useradd -M -u 990 -g docker990 squat990
+$ADD; echo "rc=$?"; getent passwd botaudit | cut -d: -f1,3,4; getent group botaudit | cut -d: -f1,3
+$DEL >/dev/null; echo "remove rc=$?"; $PURGE >/dev/null 2>&1
+userdel squat990; groupdel docker990
+snap > /tmp/q3; diff /tmp/s0 /tmp/q3 && echo "back to pre-test snapshot"
+
+t "pre-existing sane botaudit keeps its ids"
+groupadd --system -g 985 botaudit; useradd --system -M -u 985 -g botaudit botaudit
+$ADD; echo "rc=$?"; getent passwd botaudit | cut -d: -f1,3,4
+$DEL >/dev/null; echo "remove rc=$?"; $PURGE >/dev/null 2>&1
+userdel botaudit 2>/dev/null; groupdel botaudit 2>/dev/null
+snap > /tmp/q4; diff /tmp/s0 /tmp/q4 && echo "back to pre-test snapshot"
 
 t "install (must not open SSH access)"
 $ADD; echo "rc=$?"
