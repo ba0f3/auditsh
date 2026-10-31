@@ -188,6 +188,9 @@ check_uid_free() {
 
 # botaudit: fixed uid/gid, shell auditsh (listed in /etc/shells), locked, root-owned home, no cron/at.
 setup_account() {
+  command -v pkill >/dev/null 2>&1 || die "pkill not found: cannot stop $USER_NAME processes before touching its home"
+  # Early refusal (before any change); the authoritative checks follow once HOME is root-owned.
+  check_home_paths
   grep -qx "$BIN" /etc/shells 2>/dev/null || echo "$BIN" >> /etc/shells
   if id "$USER_NAME" >/dev/null 2>&1; then
     usermod --shell "$BIN" --home "$HOME_DIR" "$USER_NAME"
@@ -206,12 +209,26 @@ setup_account() {
   else
     usermod -L "$USER_NAME"
   fi
+  # Locked and on auditsh: stop whatever the account still runs so nothing can swap paths below.
+  pkill -KILL -u "$USER_NAME" 2>/dev/null || true
+  # HOME: /home is root-owned, so the account cannot replace HOME itself; refuse a symlink before install -d.
+  if [ -L "$HOME_DIR" ]; then die "$HOME_DIR is a symlink; refusing to touch it"; fi
   install -d -o root -g root -m 0755 "$HOME_DIR"
-  # Only the fixed paths, never recursive: other .ssh entries are left as they are (and stay unreachable
-  # for writes once .ssh is root-owned). backup_account refused symlinks for these before any change.
-  for f in "$HOME_DIR/.ssh/authorized_keys" "$HOME_DIR/.ssh"; do
-    if [ -e "$f" ] && [ ! -L "$f" ]; then chown -h root:root -- "$f"; fi
-  done
+  # From here HOME is root-owned, so .ssh can no longer be renamed or replaced by the account.
+  # Fixed paths only, never recursive, .ssh first; other .ssh entries are left as they are.
+  if [ -L "$HOME_DIR/.ssh" ]; then die "$HOME_DIR/.ssh is a symlink; refusing to touch it"; fi
+  if [ -e "$HOME_DIR/.ssh" ]; then
+    [ -d "$HOME_DIR/.ssh" ] || die "$HOME_DIR/.ssh is not a directory"
+    chown -h root:root -- "$HOME_DIR/.ssh"
+    # .ssh is root-owned now: authorized_keys can no longer be swapped; check it, then chown it.
+    ak=$HOME_DIR/.ssh/authorized_keys
+    if [ -L "$ak" ]; then die "$ak is a symlink; refusing to touch it"; fi
+    if [ -e "$ak" ]; then
+      [ -f "$ak" ] || die "$ak is not a regular file"
+      [ "$(stat -c %h -- "$ak")" = 1 ] || die "$ak has more than one hard link; refusing to touch it"
+      chown -h root:root -- "$ak"
+    fi
+  fi
   for f in /etc/cron.deny /etc/at.deny; do grep -qx "$USER_NAME" "$f" 2>/dev/null || echo "$USER_NAME" >> "$f"; done
 }
 
@@ -300,14 +317,8 @@ rollback() {
 # root-only 0600 file under $BAK (inside the 0700 mktemp dir); it is never printed and is removed after use.
 backup_account() {
   ACCT_EXISTED=0; PERM_HOME=; PERM_SSH=; PERM_AK=
-  for f in "$HOME_DIR" "$HOME_DIR/.ssh" "$HOME_DIR/.ssh/authorized_keys"; do
-    if [ -L "$f" ]; then die "$f is a symlink; refusing to touch it"; fi
-  done
-  if [ -e "$HOME_DIR" ] && [ ! -d "$HOME_DIR" ]; then die "$HOME_DIR exists and is not a directory"; fi
-  if [ -e "$HOME_DIR/.ssh" ] && [ ! -d "$HOME_DIR/.ssh" ]; then die "$HOME_DIR/.ssh exists and is not a directory"; fi
-  if [ -e "$HOME_DIR/.ssh/authorized_keys" ] && [ ! -f "$HOME_DIR/.ssh/authorized_keys" ]; then
-    die "$HOME_DIR/.ssh/authorized_keys exists and is not a regular file"
-  fi
+  check_home_paths
+  command -v pkill >/dev/null 2>&1 || die "pkill not found: cannot stop $USER_NAME processes before a rollback"
   if [ -d "$HOME_DIR" ]; then PERM_HOME=$(stat -c '%u:%g %a' -- "$HOME_DIR"); fi
   if [ -d "$HOME_DIR/.ssh" ]; then PERM_SSH=$(stat -c '%u:%g %a' -- "$HOME_DIR/.ssh"); fi
   if [ -f "$HOME_DIR/.ssh/authorized_keys" ]; then PERM_AK=$(stat -c '%u:%g %a' -- "$HOME_DIR/.ssh/authorized_keys"); fi
@@ -322,6 +333,20 @@ backup_account() {
   (umask 077; printf '%s\n' "$sp" | cut -d: -f2 > "$BAK/account.shadow") || die "cannot save shadow field for $USER_NAME"
   unset sp
   chmod 0600 "$BAK/account.shadow"
+}
+# check_home_paths: refuse (before any change) a symlink or wrong type at the fixed paths, and a hardlinked
+# authorized_keys. Used by backup_account and setup_account (so also on the --account-only path).
+check_home_paths() {
+  for f in "$HOME_DIR" "$HOME_DIR/.ssh" "$HOME_DIR/.ssh/authorized_keys"; do
+    if [ -L "$f" ]; then die "$f is a symlink; refusing to touch it"; fi
+  done
+  if [ -e "$HOME_DIR" ] && [ ! -d "$HOME_DIR" ]; then die "$HOME_DIR exists and is not a directory"; fi
+  if [ -e "$HOME_DIR/.ssh" ] && [ ! -d "$HOME_DIR/.ssh" ]; then die "$HOME_DIR/.ssh exists and is not a directory"; fi
+  f=$HOME_DIR/.ssh/authorized_keys
+  if [ -e "$f" ]; then
+    [ -f "$f" ] || die "$f exists and is not a regular file"
+    [ "$(stat -c %h -- "$f")" = 1 ] || die "$f has more than one hard link; refusing to touch it"
+  fi
 }
 # restore_perm PATH TYPE(d|f) "UID:GID MODE": put one fixed path back, only if it differs. The target must be
 # a non-symlink of the expected type and its parent a root-owned non-symlink directory, so a live account
@@ -340,7 +365,8 @@ restore_perm() {
 }
 restore_account() {
   [ "${ACCT_EXISTED:-0}" = 1 ] || return 0
-  # No process of the account may race the restore; the account is still locked by setup_account here.
+  # No process of the account may race the restore. If the failure came after setup_account the account is
+  # locked and on auditsh; if before, nothing under HOME was changed and restore_perm skips (parents not root).
   pkill -KILL -u "$USER_NAME" 2>/dev/null || true
   restore_perm "$HOME_DIR/.ssh/authorized_keys" f "$PERM_AK"
   restore_perm "$HOME_DIR/.ssh" d "$PERM_SSH"

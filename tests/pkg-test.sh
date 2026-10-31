@@ -138,7 +138,7 @@ $ug 777 victim" "b
 $ug 4777 victim" "sp ace" "-rf x" "--" "-"; do : > "$S/$n"; : > "$H/$n"; done
 ln -s /root/sentinel "$S/lnk"; ln -s /etc "$S/etc"; ln -s /root/sentinel "$H/lnk"; ln -s /etc "$H/etc"
 chown -hR botaudit:botaudit $S; chmod 0700 $S; chmod 0600 $S/authorized_keys
-xsnap() { snap | grep -v " $H"; find /etc /root /tmp/h1 -xdev ! -path "$H*" -printf '%U:%G %m %p\n' 2>/dev/null | sort; }
+xsnap() { snap | grep -v " $H"; find /etc /root /tmp/h1 /tmp/m2out -xdev ! -path "$H*" -printf '%U:%G %m %p\n' 2>/dev/null | sort; }
 inner() { find $H -mindepth 1 ! -path $S ! -path $S/authorized_keys -printf '%U:%G %m %y %l\n' | sort | sha256sum; }
 acct > /tmp/a0; xsnap > /tmp/x0; inner > /tmp/i0
 (cd /tmp/h1 && AUDITSH_TEST_FAIL_AFTER=setup_account auditsh-setup --local --test-hooks --key "$(cat /root/tk.pub)" >/tmp/f 2>&1); rc=$?
@@ -157,6 +157,24 @@ echo "rc=$rc refused=$(grep -c 'is a symlink; refusing' /tmp/f)"; diff /tmp/x0 /
 rm -f $S/authorized_keys; mv $S/ak.real $S/authorized_keys
 auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null 2>&1; echo "clean reinstall rc=$?"
 find $H -mindepth 1 -maxdepth 1 ! -name .ssh -exec rm -rf {} +; rm -rf /tmp/h1 /root/sentinel
+t "M-2: symlinked .ssh / hardlinked authorized_keys are refused on full install and --account-only"
+mkdir -p /tmp/h1 /tmp/m2out; printf 'k\n' > /tmp/m2out/authorized_keys; printf 's\n' > /tmp/m2out/sentinel
+chown 4242:4242 /tmp/m2out /tmp/m2out/authorized_keys; chmod 0600 /tmp/m2out/authorized_keys /tmp/m2out/sentinel
+m2() { # $1 label; account made hostile-looking (HOME owned by it) before each run
+  chown botaudit:botaudit $H; xsnap > /tmp/x0
+  (cd /tmp/h1 && auditsh-setup --local --key "$(cat /root/tk.pub)" >/tmp/f 2>&1); r1=$?; xsnap > /tmp/x1
+  (cd /tmp/h1 && auditsh-setup --account-only >/tmp/g 2>&1); r2=$?; xsnap > /tmp/x2
+  o="OUTSIDE HOME UNCHANGED"; { diff -q /tmp/x0 /tmp/x1 && diff -q /tmp/x0 /tmp/x2; } >/dev/null || { o="OUTSIDE HOME CHANGED"; diff /tmp/x0 /tmp/x2; }
+  echo "[$1] full rc=$r1 refused=$(grep -c 'refusing to touch' /tmp/f); account-only rc=$r2 refused=$(grep -c 'refusing to touch' /tmp/g); $o"
+  stat -c '%u:%g %a %n' /tmp/m2out/authorized_keys /tmp/m2out/sentinel
+}
+mv $S $S.real; ln -s /tmp/m2out $S; chown -h botaudit:botaudit $S
+m2 "symlinked .ssh"
+rm -f $S; mv $S.real $S; mv $S/authorized_keys $S/ak.real; ln /tmp/m2out/authorized_keys $S/authorized_keys
+m2 "hardlinked authorized_keys"
+rm -f $S/authorized_keys; mv $S/ak.real $S/authorized_keys
+auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null 2>&1; echo "clean reinstall rc=$?"
+rm -rf /tmp/h1 /tmp/m2out
 rm -rf /home/botaudit/.ssh; rmdir /var/lib/ba-alt
 
 pkill sshd; grep -o '"phase":"[a-z]*"\|"decision":"[a-z]*"\|"key_fp":"SHA256:[A-Za-z0-9]\{6\}' /tmp/syslog.txt | tr '\n' ' '; echo

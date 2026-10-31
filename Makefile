@@ -22,7 +22,9 @@ help: ## list targets
 build: ## reproducible single binary for HEAD -> dist/auditsh (GOOS/GOARCH/OUT honoured)
 	./build.sh
 
-test: ## go vet + race tests
+test: ## go vet + race tests (fetches and verifies modules first, so a clean checkout works)
+	go mod download
+	go mod verify
 	go vet ./...
 	go test -race -count=1 ./...
 
