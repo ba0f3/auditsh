@@ -53,6 +53,8 @@ DRY=0
 TEST_HOOKS=0
 MODE=install
 STAGED=0
+# Never inherited from the environment: these decide what cleanup may delete.
+CREATED_USER=0 CREATED_GROUP=0 AC_POST=0
 
 PKG_SHARE=/usr/share/auditsh
 PKG=0
@@ -387,11 +389,12 @@ rollback() {
     if [ -f "$BAK$f" ]; then cp -p "$BAK$f" "$f"; elif grep -qxF "$f" "$TMP/absent"; then rm -f "$f"; fi
   done
   if [ "${CREATED_USER:-0}" = 1 ]; then
-    userdel "$USER_NAME" 2>/dev/null || true; groupdel "$USER_NAME" 2>/dev/null || true
+    userdel "$USER_NAME" 2>/dev/null || true
     if [ "$HOME_EXISTED" = 0 ]; then rm -rf -- "$HOME_DIR"; fi
   else
     restore_account
   fi
+  if [ "${CREATED_GROUP:-0}" = 1 ]; then groupdel "$USER_NAME" 2>/dev/null || true; fi
   while IFS= read -r d; do rm -f -- "$d/.auditsh-created"; rmdir -- "$d" 2>/dev/null || true; done < "$TMP/newdirs"
   say "rolled back (sshd not reloaded)"
 }

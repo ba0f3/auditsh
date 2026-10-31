@@ -61,6 +61,15 @@ getent passwd botaudit || echo "no botaudit user"; getent group botaudit || echo
 $DEL >/dev/null 2>&1; $PURGE >/dev/null 2>&1; echo "cleanup rc=$?"; userdel botaudit 2>/dev/null; groupdel botaudit 2>/dev/null
 snap > /tmp/q6; diff /tmp/s0 /tmp/q6 && echo "back to pre-test snapshot"
 
+t "Q-1: CREATED_USER/CREATED_GROUP/AC_POST=1 from env + forced failure -> pre-existing botaudit survives"
+groupadd --system -g 985 botaudit; useradd --system -M -u 985 -g botaudit botaudit
+$ADD >/dev/null 2>&1; echo "install rc=$?"
+CREATED_USER=1 CREATED_GROUP=1 AC_POST=1 AUDITSH_TEST_FAIL_AFTER=account_recheck auditsh-setup --account-only --test-hooks; echo "account-only rc=$?"
+getent passwd botaudit | cut -d: -f1,3,4 || echo "BUG: botaudit user deleted"
+getent group botaudit | cut -d: -f1,3 || echo "BUG: botaudit group deleted"
+$DEL >/dev/null 2>&1; $PURGE >/dev/null 2>&1; echo "cleanup rc=$?"; userdel botaudit 2>/dev/null; groupdel botaudit 2>/dev/null
+snap > /tmp/q7; diff /tmp/s0 /tmp/q7 && echo "back to pre-test snapshot"
+
 t "pre-existing sane botaudit keeps its ids"
 groupadd --system -g 985 botaudit; useradd --system -M -u 985 -g botaudit botaudit
 $ADD; echo "rc=$?"; getent passwd botaudit | cut -d: -f1,3,4

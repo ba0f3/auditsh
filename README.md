@@ -191,7 +191,9 @@ Installing the package does **not** open SSH access. It installs:
 
 The postinst runs `auditsh-setup --account-only`: user/group `botaudit` (system-assigned uid/gid if new; an existing account keeps its ids), shell auditsh (added to
 `/etc/shells`), locked password, root-owned home, cron/at deny. Then `visudo -c`; if that fails, the sudoers
-file is removed and the postinst fails. To enable access:
+file is removed and the postinst fails. This is fail-closed by design, on upgrades too: a failed
+upgrade postinst also removes `/etc/sudoers.d/botaudit` (and `botaudit-jvm`), so audits stop until the
+cause is fixed and `auditsh-setup --account-only` is rerun. It never deletes an account it did not create. To enable access:
 
 ```sh
 apt install ./auditsh_X.Y.Z-1_amd64.deb        # or: dnf install ./auditsh-X.Y.Z-1.x86_64.rpm
