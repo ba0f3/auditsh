@@ -1,0 +1,7 @@
+# /etc/sudoers.d/botaudit  (root:root 0440). Validate: visudo -cf /etc/sudoers.d/botaudit
+# FIXED argv only: no wildcards, no regex. Every entry tagged NOEXEC (ss/dmesg never exec).
+# pmap is intentionally NOT granted: a PID argument cannot be expressed as fixed argv
+# without wildcards/regex. Works with any sudo >= 1.8 (no 1.9.10 regex features used).
+Defaults:botaudit env_reset, !setenv, !requiretty, !lecture, log_output, secure_path="/usr/bin:/bin"
+botaudit ALL=(root) NOPASSWD: NOEXEC: /usr/bin/ss -tlnp, /usr/bin/ss -ulnp
+botaudit ALL=(root) NOPASSWD: NOEXEC: /usr/bin/dmesg -T, /usr/bin/dmesg -T --level=err, /usr/bin/dmesg -T --level=err\,warn, /usr/bin/dmesg -T --level=emerg\,alert\,crit\,err\,warn

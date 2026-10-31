@@ -1,0 +1,21 @@
+# Append to /etc/ssh/sshd_config (Match blocks must come last), then: sshd -t && systemctl reload ssh
+Match User botaudit
+    ForceCommand /usr/local/sbin/auditsh
+    ExposeAuthInfo yes
+    AuthenticationMethods publickey
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    PermitTTY no
+    DisableForwarding yes
+    AllowTcpForwarding no
+    AllowStreamLocalForwarding no
+    AllowAgentForwarding no
+    X11Forwarding no
+    PermitTunnel no
+    PermitUserRC no
+    PermitListen none
+    PermitOpen none
+    MaxSessions 2
+    ClientAliveInterval 30
+    ClientAliveCountMax 2
+# Global (not allowed inside Match): PermitUserEnvironment no  (the default; keep it)

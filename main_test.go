@@ -1,0 +1,305 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func defaultCfg(t *testing.T) *config {
+	t.Helper()
+	b, err := os.ReadFile("allowlist.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := parseConfig(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func check(c *config, raw string) error {
+	argv, err := parseCommand(raw)
+	if err != nil {
+		return err
+	}
+	_, err = c.match(argv)
+	return err
+}
+
+func TestAllowed(t *testing.T) {
+	c := defaultCfg(t)
+	for _, cmd := range []string{
+		"ps aux", "ps -eo pid,rss,comm", "ps -eo pid,%mem,comm --sort=-rss", "top -b -n1",
+		"free", "free -m", "free -h", "cat /proc/meminfo", "cat /proc/1/status",
+		"cat /proc/4242/smaps_rollup", "ss -tlnp", "ss -ulnp",
+		"systemctl status nginx.service --no-pager", "systemctl status getty@tty1.service --no-pager",
+		"journalctl -u nginx.service --since today --no-pager",
+		"journalctl -u nginx.service --since '2 hours ago' --no-pager -n 100",
+		"journalctl -u ssh.socket --since '2026-10-01 12:00:00' --no-pager",
+		"df", "df -h", "uptime", "dmesg -T", "dmesg -T --level=err,warn",
+	} {
+		if err := check(c, cmd); err != nil {
+			t.Errorf("%q denied: %v", cmd, err)
+		}
+	}
+}
+
+func TestDenied(t *testing.T) {
+	c := defaultCfg(t)
+	for _, cmd := range []string{
+		"", "ps aux; reboot", "ps aux && reboot", "ps aux | sh", "ps `id`", "ps $(id)", "ps aux\nreboot",
+		"ps aux\x00", "ps aux\r", "ps\taux", "cat /proc/*/status", "cat /proc/1/stat?s",
+		"cat /proc/../etc/shadow", "cat /proc/self/../etc/shadow", "cat /proc/self/status",
+		"cat /proc/1/environ", "cat /proc/1/root/etc/shadow", "cat /proc/1/cwd/x", "cat /proc/01/status",
+		"cat /etc/shadow", "cat /proc/meminfo /etc/shadow", "cat 'proc/meminfo'",
+		"ps\u00a0aux", "ps aux\u200b", "ｐｓ aux", "ps аux", // NBSP, ZWSP, fullwidth, cyrillic a
+		"ps aux extra", "uptime -p", "free -m -h", "df -h /", "top -b -n1 -d0",
+		"journalctl -u x.service --since today", "journalctl -u x.service --since today --no-pager --file=/etc/shadow",
+		"journalctl --file=/etc/shadow", "journalctl -u x.service --since today --no-pager -f",
+		"journalctl -u x.service --since today --no-pager -o export", "journalctl --vacuum-size=1",
+		"journalctl -u -x.service --since today --no-pager", "journalctl -u x.service --since -1h --no-pager",
+		"systemctl status -H host", "systemctl status x.service -H host --no-pager", "systemctl --no-pager status x; reboot",
+		"systemctl status --no-pager", "systemctl status -x.service --no-pager", "systemctl stop x.service --no-pager",
+		"systemctl status ../x.service --no-pager", "dmesg -c", "dmesg -C", "dmesg -T -c", "dmesg -D", "dmesg -n 1", "dmesg -E",
+		"dmesg -T --level=debug", "ps -p 1 -o cmd", "ps -o cmd -p 1", "ps -eo cmd", "ps -eo pid,args", "ps -eo pid -- x",
+		"ps -- aux", "ps --sort=-rss", "pmap -x 1", "ss -tlnpK", "ss -K", "less /etc/passwd", "vim", "bash", "sh -c id",
+		"env LD_PRELOAD=x ps aux", "LD_PRELOAD=/tmp/x.so ps aux", "find / -exec sh ;", "awk 1", "xargs", "tee /x", "python3",
+		"/usr/bin/ps aux", "ps '' aux", "ps \"aux\"x", "ps 'unterminated",
+		strings.Repeat("a", 2000), "uptime" + strings.Repeat(" x", 20),
+	} {
+		if err := check(c, cmd); err == nil {
+			t.Errorf("%q allowed, want deny", cmd)
+		}
+	}
+}
+
+func TestDashRequiresLiteral(t *testing.T) {
+	c, err := parseConfig([]byte("commands:\n  - {name: x, path: /bin/x, args: ['.*']}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []string{"x -rf", "x --file=/etc/shadow", "x --"} {
+		if check(c, a) == nil {
+			t.Errorf("%q allowed by regex pattern", a)
+		}
+	}
+	if check(c, "x ok") != nil {
+		t.Error("plain arg denied")
+	}
+}
+
+func TestBadConfigs(t *testing.T) {
+	for _, y := range []string{
+		"commands: []", "commands:\n  - {name: x, path: bin/x}", "commands:\n  - {name: x, path: /bin/../x}",
+		"commands:\n  - {name: x, path: /bin/x, args: ['(']}", "commands:\n  - {name: x, path: /bin/x, bogus: 1}",
+		"commands:\n  - {name: 'a;b', path: /bin/x}", "commands:\n  - {name: x, path: 'internal:procread', sudo: true}",
+	} {
+		if _, err := parseConfig([]byte(y)); err == nil {
+			t.Errorf("config accepted: %q", y)
+		}
+	}
+}
+
+func TestConfigPerms(t *testing.T) {
+	uid := uint32(os.Getuid())
+	dir := t.TempDir()
+	os.Chmod(dir, 0o755)
+	p := filepath.Join(dir, "a.yaml")
+	os.WriteFile(p, []byte("commands:\n  - {name: uptime, path: /usr/bin/uptime}\n"), 0o644)
+	os.Chmod(p, 0o644)
+	if _, err := loadConfig(p, uid); err != nil {
+		t.Fatalf("good perms refused: %v", err)
+	}
+	if _, err := loadConfig(p, uid+1); err == nil {
+		t.Error("wrong owner accepted")
+	}
+	for _, m := range []os.FileMode{0o664, 0o646, 0o666} {
+		os.Chmod(p, m)
+		if _, err := loadConfig(p, uid); err == nil {
+			t.Errorf("mode %v accepted", m)
+		}
+	}
+	os.Chmod(p, 0o644)
+	os.Chmod(dir, 0o777)
+	if _, err := loadConfig(p, uid); err == nil {
+		t.Error("world-writable dir accepted")
+	}
+	os.Chmod(dir, 0o755)
+	l := filepath.Join(dir, "l.yaml")
+	os.Symlink(p, l)
+	if _, err := loadConfig(l, uid); err == nil {
+		t.Error("symlinked config accepted")
+	}
+}
+
+// fake writes an executable script and returns a one-rule config for it.
+func fake(t *testing.T, body string) *config {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "fake")
+	os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755)
+	c, err := parseConfig([]byte("commands:\n  - {name: fake, path: " + p + ", args: []}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func run(t *testing.T, c *config, raw string, o runOpts) (int, string, string, logEntry) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	var line string
+	if o.timeout == 0 {
+		o.timeout = 5 * time.Second
+	}
+	if o.maxOutput == 0 {
+		o.maxOutput = 1 << 20
+	}
+	code := serve(env{raw: raw, cfg: c, stdout: &out, stderr: &errb, opts: o, user: "botaudit",
+		client: "192.0.2.1", logf: func(s string) error { line = s; return nil }})
+	var le logEntry
+	if err := json.Unmarshal([]byte(line), &le); err != nil {
+		t.Fatalf("bad log line %q: %v", line, err)
+	}
+	return code, out.String(), errb.String(), le
+}
+
+func TestEnvNotPropagated(t *testing.T) {
+	t.Setenv("LD_PRELOAD", "/tmp/evil.so")
+	t.Setenv("TERM", "xterm")
+	t.Setenv("PAGER", "less")
+	code, out, _, _ := run(t, fake(t, "env; read x && echo GOTSTDIN; exit 0"), "fake", runOpts{})
+	if code != 0 {
+		t.Fatal(code)
+	}
+	for _, bad := range []string{"LD_PRELOAD", "TERM=", "PAGER=less", "GOTSTDIN"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("leaked %s:\n%s", bad, out)
+		}
+	}
+	for _, want := range []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C", "PAGER=cat", "LESSSECURE=1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+}
+
+func TestTimeoutKillsGroup(t *testing.T) {
+	pidf := filepath.Join(t.TempDir(), "pid")
+	c := fake(t, "sleep 30 & echo $! > "+pidf+"; wait")
+	start := time.Now()
+	code, _, _, le := run(t, c, "fake", runOpts{timeout: 300 * time.Millisecond})
+	if time.Since(start) > 3*time.Second || code == 0 || !le.TimedOut {
+		t.Fatalf("timeout not enforced: code=%d %+v", code, le)
+	}
+	b, _ := os.ReadFile(pidf)
+	time.Sleep(100 * time.Millisecond)
+	if st, err := os.ReadFile("/proc/" + strings.TrimSpace(string(b)) + "/stat"); err == nil && !strings.Contains(string(st), ") Z") {
+		t.Error("grandchild survived")
+	}
+}
+
+func TestTruncation(t *testing.T) {
+	code, out, errs, le := run(t, fake(t, "head -c 100000 /dev/zero; echo e >&2; sleep 10"), "fake", runOpts{maxOutput: 1000})
+	_ = code
+	if len(out) != 1000 || !le.Truncated || le.Bytes != 1000 || !strings.Contains(errs, "truncated") {
+		t.Fatalf("len=%d %+v", len(out), le)
+	}
+	if le.DurationMS > 3000 {
+		t.Error("process not stopped after cap")
+	}
+}
+
+func TestLogging(t *testing.T) {
+	c := fake(t, "echo hi; exit 3")
+	code, out, _, le := run(t, c, "fake", runOpts{})
+	if code != 3 || out != "hi\n" || le.Decision != "allow" || le.Exit != 3 || le.Bytes != 3 || le.Rule != "fake#0" || le.Client != "192.0.2.1" {
+		t.Fatalf("%d %q %+v", code, out, le)
+	}
+	code, _, _, le = run(t, c, "fake; reboot\n\x01", runOpts{})
+	if code == 0 || le.Decision != "deny" || le.Deny == "" || strings.ContainsAny(le.Command, "\n\x01") {
+		t.Fatalf("%+v", le)
+	}
+	_, _, errs, le := run(t, c, "", runOpts{})
+	if le.Decision != "deny" || !strings.Contains(errs, "fake") {
+		t.Fatal("empty command must deny and list commands")
+	}
+	_, _, _, le = run(t, c, strings.Repeat("x", 5000), runOpts{})
+	if len(le.Command) > maxLogCmd+20 {
+		t.Error("log raw not capped")
+	}
+}
+
+func TestLogFailureFailsClosed(t *testing.T) {
+	var out bytes.Buffer
+	code := serve(env{raw: "fake", cfg: fake(t, "echo hi"), stdout: &out, stderr: &out,
+		opts: runOpts{timeout: time.Second, maxOutput: 100}, logf: func(string) error { return os.ErrClosed }})
+	if code != 125 {
+		t.Fatal(code)
+	}
+}
+
+func TestConfigErrorDenies(t *testing.T) {
+	code, _, _, le := func() (int, string, string, logEntry) {
+		var b bytes.Buffer
+		var line string
+		code := serve(env{cfgErr: os.ErrPermission, raw: "uptime", stdout: &b, stderr: &b, logf: func(s string) error { line = s; return nil }})
+		var le logEntry
+		json.Unmarshal([]byte(line), &le)
+		return code, "", "", le
+	}()
+	if code == 0 || le.Decision != "deny" {
+		t.Fatal("config error must deny")
+	}
+}
+
+func TestSudoArgv(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "sudo")
+	os.WriteFile(p, []byte("#!/bin/sh\nprintf '%s|' \"$@\"\n"), 0o755)
+	c, _ := parseConfig([]byte("commands:\n  - {name: ss, path: /usr/bin/ss, sudo: true, args: ['-tlnp']}\n"))
+	_, out, _, _ := run(t, c, "ss -tlnp", runOpts{sudo: p})
+	if out != "-n|--|/usr/bin/ss|-tlnp|" {
+		t.Fatalf("sudo argv %q", out)
+	}
+}
+
+func TestBinaryOwnerCheck(t *testing.T) {
+	c := fake(t, "echo hi")
+	code, out, _, _ := run(t, c, "fake", runOpts{checkBin: true, binOwnerUID: uint32(os.Getuid()) + 1})
+	if code != 126 || out != "" {
+		t.Fatal("binary with wrong owner executed")
+	}
+}
+
+func TestProcRead(t *testing.T) {
+	var b bytes.Buffer
+	if err := procRead("/proc/meminfo", &b); err != nil || !strings.Contains(b.String(), "MemTotal") {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/proc/self/status", "/proc/1/environ", "/etc/shadow", "/proc/1/../../etc/shadow", "/proc/meminfo/"} {
+		if procRead(p, &b) == nil {
+			t.Errorf("%s readable", p)
+		}
+	}
+	for _, p := range []string{"/etc/shadow", "/etc/gshadow", "/x/server.key", "/app/.env", "/root", "/root/x", "/etc/ssh/ssh_host_ed25519_key"} {
+		if !blockedPath(p) {
+			t.Errorf("%s not blocked", p)
+		}
+	}
+}
+
+func TestKeyFingerprint(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "auth")
+	os.WriteFile(p, []byte("publickey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAK\n"), 0o600)
+	if fp := keyFingerprint(p); !strings.HasPrefix(fp, "SHA256:") {
+		t.Fatal(fp)
+	}
+	if keyFingerprint("") != "" || keyFingerprint("rel") != "" {
+		t.Fatal("bad path accepted")
+	}
+}

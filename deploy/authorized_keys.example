@@ -1,0 +1,2 @@
+# /home/botaudit/.ssh/authorized_keys (root:root 0644). Fake example key.
+restrict,command="/usr/local/sbin/auditsh",from="192.0.2.10" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAK ai-agent@example
