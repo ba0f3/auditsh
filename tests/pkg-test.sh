@@ -211,11 +211,11 @@ chown 4242:4242 /tmp/m2out /tmp/m2out/authorized_keys; chmod 0600 /tmp/m2out/aut
 m2() { # $1 label; account made hostile-looking (HOME owned by it) before each run
   chown botaudit:botaudit $H; xsnap > /tmp/x0
   (cd /tmp/h1 && auditsh-setup --local --key "$(cat /root/tk.pub)" >/tmp/f 2>&1); r1=$?; xsnap > /tmp/x1
-  cp -p /etc/sudoers.d/botaudit /root/sudoers.pkg
+  cp -p /etc/sudoers.d/botaudit /var/tmp/sudoers.pkg
   (cd /tmp/h1 && auditsh-setup --account-only >/tmp/g 2>&1); r2=$?
   # fail-closed by design: a refused --account-only removes the package sudoers; restore it for the next step
   if [ -e /etc/sudoers.d/botaudit ]; then sd="sudoers KEPT (BUG)"; else sd="sudoers removed"; fi
-  cp -p /root/sudoers.pkg /etc/sudoers.d/botaudit; xsnap > /tmp/x2
+  cp -p /var/tmp/sudoers.pkg /etc/sudoers.d/botaudit; xsnap > /tmp/x2
   o="OUTSIDE HOME UNCHANGED"; { diff -q /tmp/x0 /tmp/x1 && diff -q /tmp/x0 /tmp/x2; } >/dev/null || { o="OUTSIDE HOME CHANGED"; diff /tmp/x0 /tmp/x2; }
   echo "[$1] full rc=$r1 refused=$(grep -c 'refusing to touch' /tmp/f); account-only rc=$r2 refused=$(grep -c 'refusing to touch' /tmp/g) $sd; $o"
   stat -c '%u:%g %a %n' /tmp/m2out/authorized_keys /tmp/m2out/sentinel
@@ -226,7 +226,7 @@ rm -f $S; mv $S.real $S; mv $S/authorized_keys $S/ak.real; ln /tmp/m2out/authori
 m2 "hardlinked authorized_keys"
 rm -f $S/authorized_keys; mv $S/ak.real $S/authorized_keys
 auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null 2>&1; echo "clean reinstall rc=$?"
-rm -rf /tmp/h1 /tmp/m2out
+rm -rf /tmp/h1 /tmp/m2out /var/tmp/sudoers.pkg
 rm -rf /home/botaudit/.ssh; rmdir /var/lib/ba-alt
 
 pkill sshd; grep -o '"phase":"[a-z]*"\|"decision":"[a-z]*"\|"key_fp":"SHA256:[A-Za-z0-9]\{6\}' /tmp/syslog.txt | tr '\n' ' '; echo
