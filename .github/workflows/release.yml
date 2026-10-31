@@ -1,4 +1,5 @@
 name: release
+# Tag protection: add a repository ruleset on refs/tags/v* (only maintainers create; no update/delete).
 on:
   push:
     tags: ["v*"]
@@ -7,54 +8,83 @@ permissions:
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
+env:
+  GOTOOLCHAIN: local
 jobs:
-  release:
+  build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      contents: write      # create the release
-      id-token: write      # sigstore OIDC for attestation
-      attestations: write  # store the attestation
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+      - name: Install Go 1.27.3 (sha256-pinned tarball)
+        run: |
+          set -eu
+          curl -fsSL --proto =https --tlsv1.2 -o /tmp/go.tgz https://go.dev/dl/go1.27.3.linux-amd64.tar.gz
+          echo "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40  /tmp/go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
+          echo /usr/local/go/bin >> "$GITHUB_PATH"
       - name: Test
-        env:
-          GOTOOLCHAIN: local
         run: |
           go vet ./...
           go test -count=1 ./...
-      - name: Build (reproducible, build.sh)
-        env:
-          GOTOOLCHAIN: local
+      - name: Build twice (build.sh) and compare
         run: |
           set -eu
           mkdir -p release
           for arch in amd64 arm64; do
             GOOS=linux GOARCH="$arch" OUT="release/auditsh-linux-$arch" ./build.sh "$GITHUB_SHA"
+            GOOS=linux GOARCH="$arch" OUT="/tmp/check-$arch" ./build.sh "$GITHUB_SHA"
+            cmp "release/auditsh-linux-$arch" "/tmp/check-$arch"
           done
           cp allowlist.yaml release/allowlist.yaml
           cp deploy/sshd_config.d/50-botaudit.conf release/50-botaudit.conf
           cp deploy/sudoers.botaudit release/sudoers.botaudit
           cp install.sh release/install.sh
           cd release && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+          echo "AUDITSH_SHA256 (sha256 of SHA256SUMS): $(sha256sum SHA256SUMS | cut -d' ' -f1)"
+      - uses: actions/upload-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+          retention-days: 3
+  attest:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: |
-            release/auditsh-linux-*
-            release/allowlist.yaml
-            release/50-botaudit.conf
-            release/sudoers.botaudit
-            release/install.sh
-            release/SHA256SUMS
+          subject-path: release/*
+  publish:
+    needs: attest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag --generate-notes release/*
+        run: |
+          set -eu
+          sum=$(sha256sum release/SHA256SUMS | cut -d' ' -f1)
+          printf 'sha256(SHA256SUMS) = %s\n\nInstall: see README (pin AUDITSH_VERSION=%s and AUDITSH_SHA256=%s, obtained out of band).\n' "$sum" "$TAG" "$sum" > notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag --notes-file notes.md release/*

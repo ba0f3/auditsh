@@ -1,18 +1,24 @@
 #!/bin/sh
 # install.sh: install/upgrade/uninstall auditsh + the botaudit account on a Linux host (run as root).
-# Mirrors the README "Install (as root)" steps. Idempotent: re-running converges to the same state.
+# Mirrors the README "Install (manual, as root)" steps. Idempotent.
 #
-#   sh install.sh --key 'ssh-ed25519 AAAA... agent@x' [--from 192.0.2.10] [--version v1.2.3]
-#   sh install.sh --key-file /path/agent.pub
+#   sh install.sh --version vX.Y.Z --sha256 <sha256 of the release SHA256SUMS> --key 'ssh-ed25519 AAAA... agent@x'
+#   sh install.sh --version vX.Y.Z --require-attestation --key-file /path/agent.pub [--from 192.0.2.10]
 #   sh install.sh --uninstall
-#   sh install.sh --dry-run ...      (download + verify, print what would change, touch nothing)
+#   add --dry-run to download + verify and print what would change without touching anything.
 #
-# Env: AUDITSH_VERSION (tag, default: latest release), AUDITSH_KEY, AUDITSH_KEY_FILE, AUDITSH_FROM,
-#      AUDITSH_REQUIRE_ATTESTATION=1 (fail unless `gh attestation verify` succeeds),
-#      AUDITSH_LOCAL_BIN + AUDITSH_SRC_DIR (testing only: use a local binary and repo checkout,
-#      skips download and checksum).
+# Integrity: --version is mandatory (no "latest"). Either --sha256 (hash of SHA256SUMS, obtained out of
+# band) or --require-attestation (authenticated `gh` must verify the GitHub build provenance) is
+# required; both may be given. Every asset is then checked against SHA256SUMS; any mismatch aborts.
+# Env equivalents: AUDITSH_VERSION, AUDITSH_SHA256, AUDITSH_REQUIRE_ATTESTATION=1, AUDITSH_KEY,
+# AUDITSH_KEY_FILE, AUDITSH_FROM, AUDITSH_UID (default 990).
+# The whole script is a function called on the last line, so a truncated download runs nothing.
 set -eu
+
+main() {
 umask 022
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH LC_ALL=C
 
 REPO=ba0f3/auditsh
 BIN=/usr/local/sbin/auditsh
@@ -23,33 +29,31 @@ SSHD_DROPIN=/etc/ssh/sshd_config.d/50-botaudit.conf
 SUDOERS=/etc/sudoers.d/botaudit
 USER_NAME=botaudit
 HOME_DIR=/home/botaudit
+MARK='# auditsh-disabled: '
 
 VERSION=${AUDITSH_VERSION:-}
+SUMS_SHA=${AUDITSH_SHA256:-}
 KEY=${AUDITSH_KEY:-}
 KEY_FILE=${AUDITSH_KEY_FILE:-}
 FROM=${AUDITSH_FROM:-}
 REQ_ATTEST=${AUDITSH_REQUIRE_ATTESTATION:-0}
+FIXED_UID=${AUDITSH_UID:-990}
 DRY=0
 MODE=install
-
-say()  { printf '%s\n' "auditsh-install: $*" >&2; }
-warn() { printf '%s\n' "auditsh-install: WARNING: $*" >&2; }
-die()  { printf '%s\n' "auditsh-install: ERROR: $*" >&2; exit 1; }
-# run: execute, or only print in --dry-run. Never pass key material through run (it is printed).
-run() { if [ "$DRY" = 1 ]; then say "would run: $*"; else "$@"; fi; }
-
-usage() { sed -n '2,15p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+STAGED=0
 
 while [ $# -gt 0 ]; do
   case $1 in
-    --key) [ $# -ge 2 ] || die "--key needs a value"; KEY=$2; shift 2 ;;
-    --key-file) [ $# -ge 2 ] || die "--key-file needs a value"; KEY_FILE=$2; shift 2 ;;
-    --from) [ $# -ge 2 ] || die "--from needs a value"; FROM=$2; shift 2 ;;
-    --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION=$2; shift 2 ;;
+    --key) need "$@"; KEY=$2; shift 2 ;;
+    --key-file) need "$@"; KEY_FILE=$2; shift 2 ;;
+    --from) need "$@"; FROM=$2; shift 2 ;;
+    --version) need "$@"; VERSION=$2; shift 2 ;;
+    --sha256) need "$@"; SUMS_SHA=$2; shift 2 ;;
+    --uid) need "$@"; FIXED_UID=$2; shift 2 ;;
     --require-attestation) REQ_ATTEST=1; shift ;;
     --uninstall) MODE=uninstall; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) usage 0 ;;
+    -h|--help) sed -n '2,17p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
@@ -58,68 +62,163 @@ done
 if [ "$(id -u)" != 0 ]; then
   if [ "$DRY" = 1 ]; then warn "not root: dry-run only"; else die "must run as root"; fi
 fi
+TMP=$(mktemp -d)
+trap 'on_exit $?' EXIT
+trap 'exit 130' INT TERM HUP
 
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT INT TERM
+if [ "$MODE" = uninstall ]; then uninstall; exit 0; fi
 
-reload_sshd() {
-  if [ "$DRY" = 1 ]; then say "would reload sshd"; return 0; fi
-  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-    systemctl reload ssh 2>/dev/null || systemctl reload sshd || die "sshd reload failed"
-  elif command -v service >/dev/null 2>&1 && service ssh reload >/dev/null 2>&1; then :
-  else warn "could not reload sshd automatically; reload it yourself"; fi
-}
+# ---------------------------------------------------------------- inputs (validated before any write)
+printf '%s' "$VERSION" | grep -Eq '^v[0-9A-Za-z.+-]+$' || die "--version vX.Y.Z is required (no 'latest')"
+[ -z "$SUMS_SHA" ] || printf '%s' "$SUMS_SHA" | grep -Eq '^[0-9a-f]{64}$' || die "--sha256 must be 64 lowercase hex"
+[ -n "$SUMS_SHA" ] || [ "$REQ_ATTEST" = 1 ] || die "give --sha256 <sha256 of SHA256SUMS> or --require-attestation"
+printf '%s' "$FIXED_UID" | grep -Eq '^[0-9]{2,5}$' || die "bad --uid"
+[ -z "$FROM" ] || printf '%s' "$FROM" | grep -Eq '^[0-9A-Za-z.:/*?!,-]+$' || die "--from has invalid characters"
+command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen not found (install openssh-client)"
+command -v visudo >/dev/null 2>&1 || die "visudo not found (install sudo)"
+SSHD=$(sshd_bin)
+parse_keys
 
-sshd_bin() { command -v sshd 2>/dev/null || { [ -x /usr/sbin/sshd ] && echo /usr/sbin/sshd; } || die "sshd not found"; }
-
-# ---------------------------------------------------------------- uninstall
-if [ "$MODE" = uninstall ]; then
-  SSHD=$(sshd_bin)
-  run rm -f "$SSHD_DROPIN" "$KEYS_FILE"
-  [ "$DRY" = 1 ] || "$SSHD" -t || die "sshd -t failed after removing drop-in; fix sshd_config"
-  reload_sshd
-  if id "$USER_NAME" >/dev/null 2>&1; then
-    run pkill -KILL -u "$USER_NAME" || true
-    run userdel -r "$USER_NAME" 2>/dev/null || true   # nonzero if e.g. no mail spool
-    if [ "$DRY" = 0 ] && id "$USER_NAME" >/dev/null 2>&1; then die "userdel $USER_NAME failed"; fi
-  fi
-  run rm -f "$SUDOERS" "$BIN"
-  run rm -rf "$CONF_DIR"
-  [ -f /etc/shells ] && run sed -i '\#^/usr/local/sbin/auditsh$#d' /etc/shells
-  for f in /etc/cron.deny /etc/at.deny; do [ -f "$f" ] && run sed -i '/^botaudit$/d' "$f"; done
-  say "uninstalled"
-  exit 0
-fi
-
-# ---------------------------------------------------------------- key lines
-# Each accepted line becomes: restrict,command="/usr/local/sbin/auditsh"[,from="..."] <type> <base64> [comment]
-# Input must be a bare public key (no options); anything else is rejected.
-[ -n "$FROM" ] && { printf '%s' "$FROM" | grep -Eq '^[0-9A-Za-z.:/*?!,-]+$' || die "--from has invalid characters"; }
-KEYS_OUT=$TMP/authorized_keys
-: > "$KEYS_OUT"
-if [ -n "$KEY_FILE" ]; then [ -r "$KEY_FILE" ] || die "cannot read key file"; cat -- "$KEY_FILE" > "$TMP/keys.in"
-else printf '%s\n' "$KEY" > "$TMP/keys.in"; fi
-opts='restrict,command="/usr/local/sbin/auditsh"'
-[ -n "$FROM" ] && opts="$opts,from=\"$FROM\""
-n=0
-while IFS= read -r line || [ -n "$line" ]; do
-  case $line in ''|'#'*) continue ;; esac
-  printf '%s' "$line" | LC_ALL=C grep -Eq '^(ssh-ed25519|sk-ssh-ed25519@openssh\.com|ecdsa-sha2-nistp(256|384|521)|sk-ecdsa-sha2-nistp256@openssh\.com|ssh-rsa) [A-Za-z0-9+/]+={0,3}( [ -~]*)?$' \
-    || die "key line $((n+1)) is not a bare OpenSSH public key (no options, single line)"
-  case $line in *'"'*|*\\*) die "key comment must not contain quotes or backslashes" ;; esac
-  printf '%s %s\n' "$opts" "$line" >> "$KEYS_OUT"; n=$((n+1))
-done < "$TMP/keys.in"
-if [ "$n" = 0 ]; then
-  [ -s "$KEYS_FILE" ] || die "no key given (--key / --key-file) and $KEYS_FILE does not exist"
-  say "no key given: keeping existing $KEYS_FILE"; KEYS_OUT=
-fi
-
-# ---------------------------------------------------------------- fetch + verify
 case $(uname -m) in
   x86_64|amd64) ARCH=amd64 ;;
   aarch64|arm64) ARCH=arm64 ;;
   *) die "unsupported arch $(uname -m)" ;;
 esac
 ASSET=auditsh-linux-$ARCH
+download_verify
+
+grep -Eqi '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config \
+  || die "/etc/ssh/sshd_config lacks 'Include /etc/ssh/sshd_config.d/*.conf'; add it at the top first"
+visudo -cf "$SRC/sudoers.botaudit" >/dev/null || die "sudoers file fails visudo -cf"
+if [ "$DRY" = 0 ]; then "$SSHD" -t || die "sshd -t fails before any change; fix sshd config first"; fi
+if ! id "$USER_NAME" >/dev/null 2>&1; then
+  getent passwd "$FIXED_UID" >/dev/null && die "uid $FIXED_UID in use; pass --uid N"
+  getent group "$FIXED_UID" >/dev/null && die "gid $FIXED_UID in use; pass --uid N"
+fi
+
+if [ "$DRY" = 1 ]; then
+  say "would install $BIN, $CONF_DIR/allowlist.yaml, $SUDOERS, $SSHD_DROPIN, $KEYS_FILE ($NKEYS key line(s))"
+  id "$USER_NAME" >/dev/null 2>&1 || say "would create user $USER_NAME uid/gid $FIXED_UID home $HOME_DIR shell $BIN"
+  say "would comment out AcceptEnv, run sshd -t/-T checks, reload sshd"
+  notes; say "dry-run done, nothing changed"; exit 0
+fi
+
+# ---------------------------------------------------------------- apply (any failure from here rolls back)
+backup
+STAGED=1
+install -d -o root -g root -m 0755 /usr/local/sbin "$CONF_DIR" "$KEYS_DIR"
+install -o root -g root -m 0755 "$SRC/$ASSET" "$BIN"
+install -o root -g root -m 0644 "$SRC/allowlist.yaml" "$CONF_DIR/allowlist.yaml"
+grep -qx "$BIN" /etc/shells 2>/dev/null || echo "$BIN" >> /etc/shells
+
+if id "$USER_NAME" >/dev/null 2>&1; then
+  usermod --shell "$BIN" --home "$HOME_DIR" "$USER_NAME"
+else
+  groupadd --system --gid "$FIXED_UID" "$USER_NAME"
+  useradd --system --uid "$FIXED_UID" --gid "$FIXED_UID" --create-home --home-dir "$HOME_DIR" --shell "$BIN" "$USER_NAME"
+  CREATED_USER=1
+fi
+if [ "$("$SSHD" -T -C "user=$USER_NAME,host=x,addr=192.0.2.10" 2>/dev/null | awk '$1=="usepam"{print $2}')" = no ]; then
+  warn "UsePAM no: setting password field to '*' instead of '!' (see README Account lock)"
+  usermod -p '*' "$USER_NAME"
+else
+  usermod -L "$USER_NAME"
+fi
+install -d -o root -g root -m 0755 "$HOME_DIR"
+if [ -e "$HOME_DIR/.ssh" ]; then chown -R root:root "$HOME_DIR/.ssh"; fi
+for f in /etc/cron.deny /etc/at.deny; do grep -qx "$USER_NAME" "$f" 2>/dev/null || echo "$USER_NAME" >> "$f"; done
+
+install -o root -g root -m 0440 "$SRC/sudoers.botaudit" "$SUDOERS"
+visudo -c >/dev/null || die "visudo -c failed after install"
+
+for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+  if [ -f "$f" ] && grep -Eq '^[[:space:]]*AcceptEnv' "$f"; then sed -i "s/^[[:space:]]*AcceptEnv/$MARK&/" "$f"; fi
+done
+install -o root -g root -m 0644 "$SRC/50-botaudit.conf" "$SSHD_DROPIN"
+if [ -n "$KEYS_OUT" ]; then install -o root -g root -m 0644 "$KEYS_OUT" "$KEYS_FILE"; fi
+"$SSHD" -t || die "sshd -t failed"
+T=$("$SSHD" -T -C "user=$USER_NAME,host=x,addr=192.0.2.10") || die "sshd -T failed"
+printf '%s\n' "$T" | grep -qx "forcecommand $BIN" || die "ForceCommand not effective for $USER_NAME"
+if printf '%s\n' "$T" | grep -qi '^acceptenv'; then die "AcceptEnv still set"; fi
+pue=$(printf '%s\n' "$T" | awk '$1=="permituserenvironment"{print $2}')
+[ -z "$pue" ] || [ "$pue" = no ] || die "PermitUserEnvironment=$pue; set it to no globally"
+if grep -v '^#' "$KEYS_FILE" | grep -v '^restrict,command="/usr/local/sbin/auditsh"' | grep -q .; then
+  die "$KEYS_FILE has a line without restrict,command="
+fi
+reload_sshd
+STAGED=0
+notes
+say "done"
+}
+
+# ================================================================ helpers
+say()  { printf '%s\n' "auditsh-install: $*" >&2; }
+warn() { printf '%s\n' "auditsh-install: WARNING: $*" >&2; }
+die()  { printf '%s\n' "auditsh-install: ERROR: $*" >&2; exit 1; }
+need() { [ $# -ge 2 ] || die "$1 needs a value"; }
+run()  { if [ "$DRY" = 1 ]; then say "would run: $*"; else "$@"; fi; }
+sshd_bin() { if command -v sshd >/dev/null 2>&1; then command -v sshd; else die "sshd not found"; fi; }
+
+on_exit() {
+  if [ "$1" != 0 ] && [ "${STAGED:-0}" = 1 ]; then rollback; fi
+  rm -rf "${TMP:-/nonexistent}"
+}
+
+reload_sshd() {
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd || die "sshd reload failed"
+  elif command -v service >/dev/null 2>&1 && service ssh reload >/dev/null 2>&1; then :
+  else warn "could not reload sshd automatically; reload it yourself"; fi
+}
+
+# Files the install touches. Each is saved, or recorded as absent, before the first write.
+tracked() {
+  printf '%s\n' "$BIN" "$CONF_DIR/allowlist.yaml" "$SUDOERS" "$SSHD_DROPIN" "$KEYS_FILE" \
+    /etc/shells /etc/cron.deny /etc/at.deny /etc/ssh/sshd_config
+  for f in /etc/ssh/sshd_config.d/*.conf; do [ -f "$f" ] && printf '%s\n' "$f"; done
+  return 0
+}
+backup() {
+  BAK=$TMP/bak; mkdir -p "$BAK"; : > "$TMP/absent"; CREATED_USER=0
+  HOME_EXISTED=0; if [ -e "$HOME_DIR" ]; then HOME_EXISTED=1; fi
+  tracked | while IFS= read -r f; do
+    if [ -f "$f" ]; then mkdir -p "$BAK$(dirname "$f")"; cp -p "$f" "$BAK$f"; else echo "$f" >> "$TMP/absent"; fi
+  done
+}
+rollback() {
+  say "rolling back"
+  tracked | while IFS= read -r f; do
+    if [ -f "$BAK$f" ]; then cp -p "$BAK$f" "$f"; elif grep -qxF "$f" "$TMP/absent"; then rm -f "$f"; fi
+  done
+  if [ "${CREATED_USER:-0}" = 1 ]; then
+    userdel "$USER_NAME" 2>/dev/null || true; groupdel "$USER_NAME" 2>/dev/null || true
+    if [ "$HOME_EXISTED" = 0 ]; then rm -rf -- "$HOME_DIR"; fi
+  fi
+  say "rolled back (sshd not reloaded)"
+}
+
+parse_keys() {
+  KEYS_OUT=$TMP/authorized_keys; : > "$KEYS_OUT"
+  if [ -n "$KEY_FILE" ]; then [ -r "$KEY_FILE" ] || die "cannot read key file"; cat -- "$KEY_FILE" > "$TMP/keys.in"
+  else printf '%s\n' "$KEY" > "$TMP/keys.in"; fi
+  opts='restrict,command="/usr/local/sbin/auditsh"'
+  [ -z "$FROM" ] || opts="$opts,from=\"$FROM\""
+  NKEYS=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in ''|'#'*) continue ;; esac
+    NKEYS=$((NKEYS+1))
+    printf '%s' "$line" | grep -Eq '^(ssh-ed25519|sk-ssh-ed25519@openssh\.com|ecdsa-sha2-nistp(256|384|521)|sk-ecdsa-sha2-nistp256@openssh\.com|ssh-rsa) [A-Za-z0-9+/]+={0,3}( [ -~]*)?$' \
+      || die "key line $NKEYS is not a bare OpenSSH public key (no options, single line)"
+    case $line in *'"'*|*\\*) die "key comment must not contain quotes or backslashes" ;; esac
+    printf '%s\n' "$line" > "$TMP/one.pub"
+    ssh-keygen -lf "$TMP/one.pub" >/dev/null 2>&1 || die "key line $NKEYS is not a valid public key (ssh-keygen -lf)"
+    printf '%s %s\n' "$opts" "$line" >> "$KEYS_OUT"
+  done < "$TMP/keys.in"
+  if [ "$NKEYS" = 0 ]; then
+    [ -s "$KEYS_FILE" ] || die "no key given (--key / --key-file) and $KEYS_FILE does not exist"
+    say "no key given: keeping existing $KEYS_FILE"; KEYS_OUT=
+  fi
+}
 
 fetch() { # url dest
   if command -v curl >/dev/null 2>&1; then
@@ -129,128 +228,61 @@ fetch() { # url dest
   else die "need curl or wget"; fi
 }
 
-SRC=$TMP/src; mkdir -p "$SRC"
-if [ -n "${AUDITSH_LOCAL_BIN:-}" ]; then
-  warn "AUDITSH_LOCAL_BIN set: using local files, NO download/checksum (testing only)"
-  [ -n "${AUDITSH_SRC_DIR:-}" ] || die "AUDITSH_SRC_DIR (repo checkout) required with AUDITSH_LOCAL_BIN"
-  cp "$AUDITSH_LOCAL_BIN" "$SRC/$ASSET"
-  cp "$AUDITSH_SRC_DIR/allowlist.yaml" "$AUDITSH_SRC_DIR/deploy/sshd_config.d/50-botaudit.conf" \
-     "$AUDITSH_SRC_DIR/deploy/sudoers.botaudit" "$SRC/"
-else
-  if [ -z "$VERSION" ]; then
-    fetch "https://api.github.com/repos/$REPO/releases/latest" "$TMP/latest.json"
-    VERSION=$(sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' "$TMP/latest.json" | head -n1)
-  fi
-  printf '%s' "$VERSION" | grep -Eq '^v[0-9A-Za-z.+-]+$' || die "bad version '$VERSION'"
+download_verify() {
+  SRC=$TMP/src; mkdir -p "$SRC"
   say "version $VERSION ($ARCH)"
   base="https://github.com/$REPO/releases/download/$VERSION"
-  for f in "$ASSET" allowlist.yaml 50-botaudit.conf sudoers.botaudit SHA256SUMS; do
+  for f in SHA256SUMS "$ASSET" allowlist.yaml 50-botaudit.conf sudoers.botaudit; do
     fetch "$base/$f" "$SRC/$f" || die "download failed: $f"
   done
-  ( cd "$SRC"
-    for f in "$ASSET" allowlist.yaml 50-botaudit.conf sudoers.botaudit; do
-      want=$(awk -v f="$f" '$2==f || $2=="*"f {print $1}' SHA256SUMS)
-      [ -n "$want" ] || die "$f missing from SHA256SUMS"
-      have=$(sha256sum "$f" | awk '{print $1}')
-      [ "$want" = "$have" ] || die "sha256 mismatch for $f"
-    done ) || exit 1
-  say "sha256 verified"
-  if command -v gh >/dev/null 2>&1 && gh attestation verify "$SRC/$ASSET" --repo "$REPO" >/dev/null 2>&1 \
-     && gh attestation verify "$SRC/SHA256SUMS" --repo "$REPO" >/dev/null 2>&1; then
-    say "build provenance attestation verified (gh)"
-  elif [ "$REQ_ATTEST" = 1 ]; then
-    die "attestation verification failed or gh unavailable/unauthenticated"
-  else
-    warn "attestation not verified (needs authenticated gh); relying on sha256 over https"
+  if [ -n "$SUMS_SHA" ]; then
+    [ "$(sha256sum "$SRC/SHA256SUMS" | cut -d' ' -f1)" = "$SUMS_SHA" ] || die "SHA256SUMS does not match --sha256"
+    say "SHA256SUMS matches pinned --sha256"
   fi
-fi
-chmod 0755 "$SRC/$ASSET"
-
-# ---------------------------------------------------------------- preflight sshd
-SSHD=$(sshd_bin)
-if [ "$DRY" = 0 ]; then "$SSHD" -t || die "sshd -t fails before any change; fix sshd config first"; fi
-grep -Eqi '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config \
-  || die "/etc/ssh/sshd_config lacks 'Include /etc/ssh/sshd_config.d/*.conf'; add it at the top first"
-command -v visudo >/dev/null 2>&1 || die "visudo not found (install sudo)"
-visudo -cf "$SRC/sudoers.botaudit" >/dev/null || die "sudoers file fails visudo -cf"
-
-# ---------------------------------------------------------------- install files
-inst() { run install -o root -g root -m "$1" "$2" "$3"; }
-run install -d -o root -g root -m 0755 /usr/local/sbin "$CONF_DIR" "$KEYS_DIR"
-inst 0755 "$SRC/$ASSET" "$BIN"
-inst 0644 "$SRC/allowlist.yaml" "$CONF_DIR/allowlist.yaml"
-grep -qx "$BIN" /etc/shells 2>/dev/null || { [ "$DRY" = 1 ] && say "would add $BIN to /etc/shells" || echo "$BIN" >> /etc/shells; }
-
-# ---------------------------------------------------------------- user
-if id "$USER_NAME" >/dev/null 2>&1; then
-  run usermod --shell "$BIN" --home "$HOME_DIR" "$USER_NAME"
-else
-  run useradd --system --create-home --home-dir "$HOME_DIR" --shell "$BIN" "$USER_NAME"
-fi
-if [ "$("$SSHD" -T -C user=$USER_NAME,host=x,addr=192.0.2.10 2>/dev/null | awk '$1=="usepam"{print $2}')" = no ]; then
-  warn "UsePAM no: setting password field to '*' instead of '!' (see README Account lock)"
-  run usermod -p '*' "$USER_NAME"
-else
-  run usermod -L "$USER_NAME"
-fi
-run install -d -o root -g root -m 0755 "$HOME_DIR"
-[ -e "$HOME_DIR/.ssh" ] && run chown -R root:root "$HOME_DIR/.ssh"
-for f in /etc/cron.deny /etc/at.deny; do
-  grep -qx "$USER_NAME" "$f" 2>/dev/null || { [ "$DRY" = 1 ] && say "would add $USER_NAME to $f" || echo "$USER_NAME" >> "$f"; }
-done
-
-# ---------------------------------------------------------------- sudoers (validated before activation)
-if [ "$DRY" = 1 ]; then say "would install $SUDOERS (0440)"; else
-  install -o root -g root -m 0440 "$SRC/sudoers.botaudit" "$SUDOERS.new"   # '.' in name: ignored by includedir
-  visudo -cf "$SUDOERS.new" >/dev/null || { rm -f "$SUDOERS.new"; die "visudo rejected sudoers"; }
-  [ -f "$SUDOERS" ] && cp -p "$SUDOERS" "$TMP/sudoers.bak"
-  mv -f "$SUDOERS.new" "$SUDOERS"
-  if ! visudo -c >/dev/null; then
-    if [ -f "$TMP/sudoers.bak" ]; then cp -p "$TMP/sudoers.bak" "$SUDOERS"; else rm -f "$SUDOERS"; fi
-    die "visudo -c failed after install; rolled back"
+  if [ "$REQ_ATTEST" = 1 ]; then
+    command -v gh >/dev/null 2>&1 || die "--require-attestation: gh not installed"
+    gh attestation verify "$SRC/SHA256SUMS" --repo "$REPO" >/dev/null 2>&1 \
+      || die "--require-attestation: gh attestation verify failed (is gh authenticated?)"
+    say "SHA256SUMS build provenance attestation verified"
   fi
-fi
-
-# ---------------------------------------------------------------- sshd (validated before reload, rollback)
-if [ "$DRY" = 1 ]; then
-  say "would install $SSHD_DROPIN, $KEYS_FILE (${n} key line(s)), comment out AcceptEnv, sshd -t, reload"
-else
-  BAK=$TMP/bak; mkdir -p "$BAK"
-  for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf "$KEYS_FILE"; do
-    [ -f "$f" ] && { mkdir -p "$BAK$(dirname "$f")"; cp -p "$f" "$BAK$f"; }
+  for f in "$ASSET" allowlist.yaml 50-botaudit.conf sudoers.botaudit; do
+    want=$(awk -v f="$f" '$2==f || $2=="*"f {print $1}' "$SRC/SHA256SUMS")
+    [ -n "$want" ] || die "$f missing from SHA256SUMS"
+    [ "$(sha256sum "$SRC/$f" | cut -d' ' -f1)" = "$want" ] || die "sha256 mismatch for $f"
   done
-  had_dropin=0; [ -f "$SSHD_DROPIN" ] && had_dropin=1
-  had_keys=0; [ -f "$KEYS_FILE" ] && had_keys=1
-  rollback() {
-    for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf "$KEYS_FILE"; do
-      [ -f "$BAK$f" ] && cp -p "$BAK$f" "$f"
-    done
-    [ "$had_dropin" = 0 ] && rm -f "$SSHD_DROPIN"
-    [ "$had_keys" = 0 ] && rm -f "$KEYS_FILE"
-    die "$1; sshd config rolled back"
-  }
-  # No AcceptEnv anywhere (cumulative, cannot be undone inside Match).
+  chmod 0755 "$SRC/$ASSET"
+  say "all assets verified"
+}
+
+notes() {
+  grep -Eq '^[^ ]+ /proc proc [^ ]*hidepid=' /proc/mounts 2>/dev/null \
+    || warn "/proc not mounted with hidepid=2/invisible (recommended, test first; see README Residual risks)"
+  command -v auditctl >/dev/null 2>&1 || warn "auditd not installed; consider it for exec auditing"
+  warn "auditsh logs JSON to syslog local7 (tag auditsh) and fails closed if syslog is down;"
+  warn "  route it to a root-only file, e.g. rsyslog: local7.* /var/log/auditsh.log"
+  warn "verify login (UsePAM caveat, README 'Account lock'): ssh -i KEY $USER_NAME@HOST uptime"
+}
+
+uninstall() {
+  SSHD=$(sshd_bin)
+  run rm -f "$SSHD_DROPIN" "$KEYS_FILE"
   for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
-    [ -f "$f" ] && grep -Eq '^[[:space:]]*AcceptEnv' "$f" && sed -i 's/^\s*AcceptEnv/# &/' "$f"
+    if [ -f "$f" ] && grep -q "^$MARK" "$f"; then run sed -i "s/^$MARK//" "$f"; fi
   done
-  install -o root -g root -m 0644 "$SRC/50-botaudit.conf" "$SSHD_DROPIN"
-  if [ -n "$KEYS_OUT" ]; then install -o root -g root -m 0644 "$KEYS_OUT" "$KEYS_FILE"; fi
-  "$SSHD" -t || rollback "sshd -t failed"
-  T=$("$SSHD" -T -C user=$USER_NAME,host=x,addr=192.0.2.10) || rollback "sshd -T failed"
-  printf '%s\n' "$T" | grep -qx "forcecommand $BIN" || rollback "ForceCommand not effective for $USER_NAME"
-  printf '%s\n' "$T" | grep -qi '^acceptenv' && rollback "AcceptEnv still set"
-  pue=$(printf '%s\n' "$T" | awk '$1=="permituserenvironment"{print $2}')
-  [ -z "$pue" ] || [ "$pue" = no ] || rollback "PermitUserEnvironment=$pue; set it to no globally"
-  grep -v '^#' "$KEYS_FILE" | grep -v '^restrict,command="/usr/local/sbin/auditsh"' | grep -q . \
-    && rollback "$KEYS_FILE has a line without restrict,command=; fix it"
-  reload_sshd
-fi
+  if [ "$DRY" = 0 ]; then "$SSHD" -t || die "sshd -t failed after uninstall; fix sshd_config"; reload_sshd; fi
+  if id "$USER_NAME" >/dev/null 2>&1; then
+    run pkill -KILL -u "$USER_NAME" || true
+    run userdel "$USER_NAME"
+    if [ "$DRY" = 0 ] && getent group "$USER_NAME" >/dev/null; then groupdel "$USER_NAME" || true; fi
+  fi
+  run rm -rf -- "$HOME_DIR"
+  run rm -f "$SUDOERS" "$BIN"
+  run rm -rf -- "$CONF_DIR"
+  if [ -f /etc/shells ]; then run sed -i '\#^/usr/local/sbin/auditsh$#d' /etc/shells; fi
+  for f in /etc/cron.deny /etc/at.deny; do
+    if [ -f "$f" ]; then run sed -i '/^botaudit$/d' "$f"; if [ "$DRY" = 0 ] && [ ! -s "$f" ]; then rm -f "$f"; fi; fi
+  done
+  say "uninstalled"
+}
 
-# ---------------------------------------------------------------- post-install notes
-grep -Eq '^[^ ]+ /proc proc [^ ]*hidepid=' /proc/mounts 2>/dev/null \
-  || warn "/proc not mounted with hidepid=2/invisible (recommended, test first; see README Residual risks)"
-command -v auditctl >/dev/null 2>&1 || warn "auditd not installed; consider it for exec auditing"
-warn "auditsh logs JSON to syslog local7 (tag auditsh) and fails closed if syslog is down;"
-warn "  route it to a root-only file, e.g. rsyslog: local7.* /var/log/auditsh.log"
-warn "verify login (UsePAM caveat, README 'Account lock'): ssh -i KEY $USER_NAME@HOST uptime"
-if [ "$DRY" = 1 ]; then say "dry-run done, nothing changed"; else say "done"; fi
+main "$@"

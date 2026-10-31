@@ -53,25 +53,36 @@ It then prints the `vcs.revision`/`vcs.modified` values from `go version -m` and
 Two builds of the same commit give identical hashes.
 
 ## Quick install (release binary, as root)
-Releases (`v*` tags) are built by `.github/workflows/release.yml` with `build.sh` (go1.27.3, `-trimpath`, CGO off)
-for linux/amd64 and linux/arm64, and ship `SHA256SUMS` plus a GitHub build-provenance attestation.
-`install.sh` downloads the binary and config for one tag, checks sha256 (fails closed), and, when an authenticated `gh` is present,
-checks the attestation (`--require-attestation` makes that mandatory). It then performs the manual steps below, validates with
-`visudo -cf` and `sshd -t`/`sshd -T`, rolls sshd files back on failure, and reloads sshd. It is idempotent; `--dry-run` and `--uninstall` are supported.
-Keys must be bare public keys; the installer adds `restrict,command="/usr/local/sbin/auditsh"` (and `,from=` with `--from`).
+Releases (`v*` tags) are built by `.github/workflows/release.yml`: a read-only `build` job runs `build.sh` twice per arch
+(linux/amd64, linux/arm64; go1.27.3 from a sha256-pinned tarball, `-trimpath`, CGO off) and compares the results. A separate `attest`
+job adds GitHub build provenance, and a `publish` job (the only one with `contents: write`) creates the release with
+`auditsh-linux-<arch>`, `allowlist.yaml`, `50-botaudit.conf`, `sudoers.botaudit`, `install.sh` and `SHA256SUMS`.
+**Maintainers:** protect tags with a repository ruleset on `refs/tags/v*` (restrict creation to maintainers, block update and deletion).
 
-Recommended (download, verify, read, then run; replace `<tag>`):
+`install.sh` never installs "latest". It requires `--version` plus at least one trust anchor that does not come from the release itself:
+- `--sha256 <sha256 of SHA256SUMS>`, published out of band (for example a signed announcement, or your own reproducible `build.sh` run), and/or
+- `--require-attestation`: an authenticated `gh` must verify the provenance. If gh is missing, the install fails.
+
+Every asset is then checked against SHA256SUMS. Key lines are checked with `ssh-keygen -lf` and get
+`restrict,command="/usr/local/sbin/auditsh"` (plus `,from=` with `--from`). Before writing anything it validates sudoers (`visudo -cf`) and the existing sshd
+config (`sshd -t`). After writing it checks `sshd -t`/`sshd -T`. On any failure it rolls back every file it touched and removes a user it created.
+botaudit gets the fixed uid/gid 990 (`--uid N` to change). The installer is idempotent and supports `--dry-run`/`--uninstall`. Uninstall also
+restores the `AcceptEnv` lines the installer commented out (marked `# auditsh-disabled:`).
+
+Recommended (download, verify, read, then run):
 ```sh
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/ba0f3/auditsh/releases/download/<tag>/install.sh
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/ba0f3/auditsh/releases/download/<tag>/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS && gh attestation verify install.sh --repo ba0f3/auditsh
+V=vX.Y.Z; SUMS_SHA=<sha256 of SHA256SUMS, from a trusted channel>
+curl --proto '=https' --tlsv1.2 -fsSLO https://github.com/ba0f3/auditsh/releases/download/$V/install.sh
+curl --proto '=https' --tlsv1.2 -fsSLO https://github.com/ba0f3/auditsh/releases/download/$V/SHA256SUMS
+echo "$SUMS_SHA  SHA256SUMS" | sha256sum -c - && sha256sum -c --ignore-missing SHA256SUMS
 less install.sh
-sudo AUDITSH_VERSION=<tag> sh install.sh --key 'ssh-ed25519 AAAA... agent@example' --from 192.0.2.10
+sudo sh install.sh --version "$V" --sha256 "$SUMS_SHA" --key 'ssh-ed25519 AAAA... agent@example' --from 192.0.2.10
 ```
-One line (trusts GitHub TLS only; pin a tag, not a branch):
+One line (the script body is wrapped in `main`, so a truncated download runs nothing; still pin both values):
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ba0f3/auditsh/<tag>/install.sh | sudo AUDITSH_VERSION=<tag> sh -s -- --key 'ssh-ed25519 AAAA... agent@example'
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/ba0f3/auditsh/releases/download/vX.Y.Z/install.sh | sudo sh -s -- --version vX.Y.Z --sha256 <sha256 of SHA256SUMS> --key 'ssh-ed25519 AAAA... agent@example'
 ```
+`tests/chroot-test.sh` exercises the installer in a throwaway Debian chroot against a fake local release (it replaces curl there). Never run it on a real host.
 
 ## Install (manual, as root)
 ```sh

@@ -5,6 +5,8 @@ on:
   pull_request:
 permissions:
   contents: read
+env:
+  GOTOOLCHAIN: local
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -14,14 +16,20 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.27.3"
-          cache: false
-      - env:
-          GOTOOLCHAIN: local
+      - name: Install Go 1.27.3 (sha256-pinned tarball)
         run: |
+          set -eu
+          curl -fsSL --proto =https --tlsv1.2 -o /tmp/go.tgz https://go.dev/dl/go1.27.3.linux-amd64.tar.gz
+          echo "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40  /tmp/go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
+          echo /usr/local/go/bin >> "$GITHUB_PATH"
+      - run: |
+          set -eu
           go vet ./...
           go test -race -count=1 ./...
-          ./build.sh "$GITHUB_SHA"
+          for arch in amd64 arm64; do
+            GOARCH=$arch OUT=/tmp/a-$arch ./build.sh "$GITHUB_SHA"
+            GOARCH=$arch OUT=/tmp/b-$arch ./build.sh "$GITHUB_SHA"
+            cmp /tmp/a-$arch /tmp/b-$arch
+          done
       - run: shellcheck install.sh build.sh
