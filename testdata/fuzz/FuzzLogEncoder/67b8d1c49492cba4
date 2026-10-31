@@ -1,0 +1,6 @@
+go test fuzz v1
+string("\"\"\"\"\"")
+string("\x85\u0085\"")
+string("\"00\"")
+string("0")
+string("\"\"")

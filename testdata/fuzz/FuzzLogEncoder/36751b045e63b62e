@@ -1,0 +1,6 @@
+go test fuzz v1
+string("&\xeb&\x9900&\xcc0&\xca000000\x99&\xf5&0\x830&\x80&0\xc6&\xa3000000\x9c0000\xf50\"00\"0\xc50")
+string("0")
+string("0000\xd700\xad")
+string("00\xef000\xa9")
+string("0\xff00")

@@ -1,0 +1,6 @@
+go test fuzz v1
+string("\xed\x8a")
+string("0")
+string("0")
+string("\xbc")
+string("\xf30\xbd\x8e\xc2\xdc&\xb3\xd5\xf3\"&\xd2\xc50\x9b\x92\xe70\x9d")

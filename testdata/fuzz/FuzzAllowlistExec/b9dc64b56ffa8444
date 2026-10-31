@@ -1,0 +1,2 @@
+go test fuzz v1
+string("systemctl status a@b.tim--o er-npager")

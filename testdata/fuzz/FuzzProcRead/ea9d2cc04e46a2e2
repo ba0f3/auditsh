@@ -1,0 +1,4 @@
+go test fuzz v1
+string("/proc/me\xfd\x9f000")
+[]byte("0")
+uint16(56)

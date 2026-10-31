@@ -1,0 +1,6 @@
+go test fuzz v1
+string("0\x1c\x1c\x1c\x1c\x1c\x1c\x1c")
+string("0")
+string("\xc600")
+string("0")
+string("0\xa9&0\xb2&0\xa000\x1b\xf000\x8d\x1d0\xd800")

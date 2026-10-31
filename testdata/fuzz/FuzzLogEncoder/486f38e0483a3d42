@@ -1,0 +1,6 @@
+go test fuzz v1
+string("0\x8c&\xe3")
+string("")
+string("\xff")
+string("0")
+string("00&\xc50000000\xce0&000")

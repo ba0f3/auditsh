@@ -26,13 +26,18 @@ func procRead(path string, w io.Writer) error {
 	if rp, err := filepath.EvalSymlinks(path); err != nil || rp != path {
 		return errors.New("path resolves elsewhere")
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	f, err := procOpen(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	_, err = io.Copy(w, f)
 	return err
+}
+
+// procOpen opens a validated /proc path (seam for tests/fuzzing).
+var procOpen = func(path string) (io.ReadCloser, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 }
 
 // blockedPath is a defence-in-depth hard denylist (design.md section 4), applied even

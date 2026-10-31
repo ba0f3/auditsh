@@ -1,0 +1,6 @@
+go test fuzz v1
+string("\xf3\xa4\xb4\xc8")
+string("0")
+string("0")
+string("0")
+string("0")

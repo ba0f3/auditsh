@@ -1,0 +1,4 @@
+go test fuzz v1
+string("/proc/0\xe4\xa6\xc2000")
+[]byte("0")
+uint16(71)

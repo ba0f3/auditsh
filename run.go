@@ -22,6 +22,18 @@ var cleanEnv = []string{
 	"SYSTEMD_PAGER=", "SYSTEMD_LESS=", "LESSSECURE=1", "SYSTEMD_COLORS=0",
 }
 
+// childEnv returns a fresh copy of the fixed child environment (callers may not alias cleanEnv).
+func childEnv() []string { return append([]string(nil), cleanEnv...) }
+
+// execArgv returns the exact argv for an allowlisted external rule: [path args...] or,
+// for sudo rules, [sudo -n -- path args...]. argv[0] is the binary actually executed.
+func execArgv(r *rule, args []string, sudo string) []string {
+	if r.Sudo {
+		return append([]string{sudo, "-n", "--", r.Path}, args...)
+	}
+	return append([]string{r.Path}, args...)
+}
+
 // capWriter forwards at most limit bytes to w, then drops the rest and calls onFull once.
 type capWriter struct {
 	mu        sync.Mutex
@@ -37,6 +49,13 @@ func (c *capWriter) Write(p []byte) (int, error) {
 	defer c.mu.Unlock()
 	room := c.limit - c.n
 	if room <= 0 {
+		// Output already filled the cap exactly; any further byte means truncation.
+		if len(p) > 0 && !c.truncated {
+			c.truncated = true
+			if c.onFull != nil {
+				c.onFull()
+			}
+		}
 		return len(p), nil
 	}
 	q := p
@@ -100,17 +119,13 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 			}
 		}
 	}
-	name, argv := r.Path, args
-	if r.Sudo {
-		name = o.sudo
-		argv = append([]string{"-n", "--", r.Path}, args...)
-	}
-	cmd := exec.CommandContext(ctx, name, argv...)
+	full := execArgv(r, args, o.sudo)
+	cmd := exec.CommandContext(ctx, full[0], full[1:]...)
 	// On timeout/cap: SIGKILL the whole process group, then after WaitDelay force-close
 	// our pipe ends so a setsid'd descendant holding stdout cannot stall Wait.
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = waitDelay
-	cmd.Env = cleanEnv
+	cmd.Env = childEnv()
 	cmd.Stdout = cw
 	cmd.Stderr = cw
 	devnull, err := os.Open(os.DevNull)

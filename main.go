@@ -106,8 +106,7 @@ func serve(e env) int {
 	finish := func(code int) int {
 		le.Exit = code
 		le.DurationMS = time.Since(start).Milliseconds()
-		b, _ := json.Marshal(le)
-		if err := e.logf(string(b)); err != nil {
+		if err := e.logf(encodeLog(le)); err != nil {
 			fmt.Fprintln(e.stderr, "auditsh: audit log unavailable")
 			return 125
 		}
@@ -144,7 +143,7 @@ func serve(e env) int {
 	}
 	le.Rule, le.Argv, le.Decision, le.Phase = r.ID, argv, "allow", "start"
 	// Fail closed: nothing executes unless the start record was accepted by syslog.
-	if b, _ := json.Marshal(le); e.logf(string(b)) != nil {
+	if e.logf(encodeLog(le)) != nil {
 		fmt.Fprintln(e.stderr, "auditsh: audit log unavailable, refusing")
 		return 125
 	}
@@ -162,6 +161,26 @@ func serve(e env) int {
 		fmt.Fprintf(e.stderr, "\nauditsh: timed out after %s\n", e.opts.timeout)
 	}
 	return finish(res.exit)
+}
+
+// encodeLog renders one audit record as a single line of JSON. On top of encoding/json
+// (which escapes C0 controls, U+2028/U+2029 and replaces invalid UTF-8), DEL (0x7f) and the
+// C1 controls U+0080-U+009F are escaped too, so no field can inject terminal or syslog
+// control sequences.
+func encodeLog(le logEntry) string {
+	b, err := json.Marshal(le)
+	if err != nil {
+		return `{"phase":"error","reason":"log encode failed"}`
+	}
+	var sb strings.Builder
+	for _, r := range string(b) {
+		if r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			fmt.Fprintf(&sb, `\u%04x`, r)
+			continue
+		}
+		sb.WriteRune(r)
+	}
+	return sb.String()
 }
 
 func printAllowed(c *config, w io.Writer) {

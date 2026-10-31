@@ -1,0 +1,6 @@
+go test fuzz v1
+string("0")
+string("&")
+string("\"\"0\"\"\x8e\x8e\x8e\x8e\x8e\xe2")
+string("\xff\xfe")
+string("\"\"\"\xff\"")

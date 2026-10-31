@@ -1,0 +1,6 @@
+go test fuzz v1
+string("\xce")
+string("0")
+string("\x80")
+string("&&\xff&&&")
+string("0")
