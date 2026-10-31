@@ -39,6 +39,9 @@ func TestResolveBadConfigs(t *testing.T) {
 		"commands:\n  - {name: cat, path: 'internal:fileread', sudo: true, args: ['/etc/os-release']}\n",
 		"commands:\n  - {name: cat, path: 'internal:fileread', resolve: true, args: ['/etc/os-release']}\n",
 		"commands:\n  - {name: cat, path: 'internal:procread', resolve: true, args: ['/proc/meminfo']}\n",
+		"commands:\n  - {name: java, path: /usr/bin/java, resolve: true, args: ['-version']}\n",
+		"commands:\n  - {name: iptables, path: /tmp/iptables, sudo: true, resolve: true, args: ['-S']}\n",
+		"commands:\n  - {name: iptables, path: /usr/sbin/ip6tables, sudo: true, resolve: true, args: ['-S']}\n",
 		"commands:\n  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, resolve: true, args: ['[1-9][0-9]{0,9}', 'VM.uptime']}\n",
 	} {
 		if _, err := parseConfig([]byte(y)); err == nil {
@@ -161,4 +164,19 @@ func FuzzCheckChain(f *testing.F) {
 			t.Fatalf("accepted %q -> %q", target, got)
 		}
 	})
+}
+
+// A clean root-owned chain is still refused unless it ends at a fixed xtables binary.
+func TestCheckResolvedTargetSet(t *testing.T) {
+	d := safeDir(t)
+	tgt := filepath.Join(d, "busybox")
+	os.WriteFile(tgt, []byte("x"), 0o755)
+	l := filepath.Join(d, "iptables")
+	os.Symlink(tgt, l)
+	if _, err := checkChain(l, uint32(os.Getuid())); err != nil {
+		t.Fatalf("chain itself should pass: %v", err)
+	}
+	if err := checkResolved(l, uint32(os.Getuid())); err == nil {
+		t.Fatal("non-xtables target accepted")
+	}
 }

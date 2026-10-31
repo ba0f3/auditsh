@@ -28,7 +28,7 @@ func TestJVMDenied(t *testing.T) {
 		"jcmd 4242 GC.heap_dump /tmp/x", "jcmd 4242 GC.heap_dump", "jcmd 4242 JFR.start", "jcmd 4242 JFR.dump filename=/tmp/x",
 		"jcmd 4242 VM.command_line", "jcmd 4242 VM.system_properties", "jcmd 4242 VM.set_flag HeapDumpPath /tmp",
 		"jcmd 4242 ManagementAgent.start", "jcmd 4242 Compiler.directives_add /x", "jcmd 4242 JVMTI.agent_load /x.so",
-		"jcmd 4242 System.trim_native_heap", "jcmd 4242 help", "jcmd 4242 GC.class_histogram", // opt-in, off by default
+		"jcmd 4242 System.trim_native_heap", "jcmd 4242 help", "jcmd 4242 GC.class_histogram", // never offered (L-1)
 		"jcmd 4242 GC.heap_info extra", "jcmd 4242 Thread.print -l", "jcmd 4242 VM.native_memory detail",
 		"jcmd 4242 VM.native_memory summary.diff", "jcmd 4242 VM.native_memory baseline",
 		"jcmd abc GC.heap_info", "jcmd 0 GC.heap_info", "jcmd 0123 GC.heap_info", "jcmd -1 GC.heap_info",
@@ -101,7 +101,9 @@ func TestJVMSudoArgv(t *testing.T) {
 	os.WriteFile(p, []byte("#!/bin/sh\nprintf '%s|' \"$@\"\n"), 0o755)
 	c := defaultCfg(t)
 	proc := fakeProc(t, "4242", "java", "1001\t1001\t1001\t1001")
-	o := runOpts{sudo: p, procDir: proc, lookupUser: lookupFake}
+	ju := filepath.Join(t.TempDir(), "java-users")
+	os.WriteFile(ju, []byte("app\n"), 0o644)
+	o := runOpts{sudo: p, procDir: proc, lookupUser: lookupFake, javaUsers: ju}
 	_, out, _, le := run(t, c, "jstat -gcutil 4242 500 5", o)
 	if out != "-n|-u|app|--|/usr/local/sbin/auditsh-jvm|jstat|-gcutil|4242|500|5|" || le.Phase != "end" {
 		t.Fatalf("sudo argv %q", out)
@@ -109,6 +111,18 @@ func TestJVMSudoArgv(t *testing.T) {
 	_, out, _, _ = run(t, c, "jcmd 4242 VM.native_memory summary", o)
 	if out != "-n|-u|app|--|/usr/local/sbin/auditsh-jvm|jcmd|4242|VM.native_memory|summary|" {
 		t.Fatalf("sudo argv %q", out)
+	}
+	// L-2: owner not in java-users, or java-users missing/empty: denied before sudo.
+	for _, content := range []string{"other\n", "", "root\nbotaudit\n", "-"} {
+		o2 := o
+		o2.javaUsers = filepath.Join(t.TempDir(), "java-users")
+		if content != "-" {
+			os.WriteFile(o2.javaUsers, []byte(content), 0o644)
+		}
+		code, out, errs, le := run(t, c, "jcmd 4242 VM.flags", o2)
+		if code != 126 || out != "" || !strings.Contains(errs, "auditsh: denied: ") || le.Decision != "deny" {
+			t.Fatalf("java-users %q: code %d out %q err %q", content, code, out, errs)
+		}
 	}
 	// Not a JVM / root JVM / missing pid: sudo is never run.
 	for _, raw := range []string{"jcmd 4243 VM.flags", "jcmd 4242 VM.flags"} {
@@ -127,7 +141,7 @@ func TestJVMSudoArgv(t *testing.T) {
 func TestJVMHelperRejects(t *testing.T) {
 	for _, args := range [][]string{
 		{}, {"jcmd"}, {"jcmd", "1"}, {"java", "1", "VM.flags"}, {"sh", "-c", "id"},
-		{"jcmd", "1", "GC.heap_dump", "/tmp/x"}, {"jcmd", "1", "GC.heap_dump"}, {"jcmd", "1", "JFR.start"},
+		{"jcmd", "1", "GC.heap_dump", "/tmp/x"}, {"jcmd", "1", "GC.class_histogram"}, {"jcmd", "1", "GC.heap_dump"}, {"jcmd", "1", "JFR.start"},
 		{"jcmd", "1", "VM.command_line"}, {"jcmd", "1", "VM.system_properties"}, {"jcmd", "1", "VM.set_flag", "x", "y"},
 		{"jcmd", "1", "JVMTI.agent_load", "/x.so"}, {"jcmd", "1", "ManagementAgent.start"}, {"jcmd", "1", "VM.flags", "-all"},
 		{"jcmd", "1", "GC.heap_info", "x"}, {"jcmd", "1", "VM.native_memory", "detail"},

@@ -57,7 +57,7 @@ func TestSystemAuditAllowed(t *testing.T) {
 	for _, cmd := range []string{
 		"who", "last -n 1", "last -n 50", "last -n 9999", "uname -a", "dpkg-query -l", "rpm -qa",
 		"systemctl list-units --failed --no-pager", "systemctl list-timers --no-pager",
-		"getent passwd", "getent group", "sshd -T", "crontab -l -u root", "nft list ruleset", "auditctl -l",
+		"getent passwd", "getent group", "sshd -T", "crontab -l -u root", "nft list ruleset", "auditctl -l", "wtmpdb last -n 50", "iptables -L -n -v", "ip6tables -L -n -v",
 	} {
 		if err := check(c, cmd); err != nil {
 			t.Errorf("%q denied: %v", cmd, err)
@@ -105,7 +105,7 @@ func TestSystemAuditDenied(t *testing.T) {
 		"systemctl list-timers", "systemctl list-timers --no-pager --all", "systemctl --failed --no-pager",
 		"getent", "getent shadow", "getent gshadow", "getent passwd root", "getent hosts x",
 		"sshd", "sshd -T -f /etc/shadow", "sshd -T -C user=root", "sshd -t", "sshd -d",
-		"crontab -l", "crontab -l -u botaudit", "crontab -e -u root", "crontab -r -u root", "crontab -u root -l",
+		"crontab -l", "wtmpdb last", "wtmpdb last -n 0", "wtmpdb last -n 5 -f /tmp/x", "wtmpdb boot", "crontab -l -u botaudit", "crontab -e -u root", "crontab -r -u root", "crontab -u root -l",
 		"crontab /tmp/x", "nft list ruleset -a", "nft flush ruleset", "nft -f /tmp/x", "nft list tables",
 		"auditctl -l -k x", "auditctl -D", "auditctl -e 0", "auditctl -s",
 		// pagers / exec

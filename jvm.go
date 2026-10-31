@@ -87,3 +87,33 @@ func lookupUserName(uid string) (string, error) {
 	}
 	return u.Username, nil
 }
+
+// javaUsersFile is written by install.sh (--java-user), root:root 0644, one user name per line.
+// It mirrors the Runas list of /etc/sudoers.d/botaudit-jvm so an unconfigured owner is denied
+// here (126) instead of producing a sudo auth failure.
+const javaUsersFile = "/etc/auditsh/java-users"
+
+func loadJavaUsers(path string, check bool, ownerUID uint32) (map[string]bool, error) {
+	if check {
+		if err := checkTree(path, ownerUID); err != nil {
+			return nil, err
+		}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]bool{}
+	for _, ln := range strings.Split(string(b), "\n") {
+		ln = strings.TrimSpace(ln)
+		if userRE.MatchString(ln) && ln != "root" && ln != "botaudit" {
+			m[ln] = true
+		}
+	}
+	return m, nil
+}
+
+// deniedError is a policy refusal found after the allowlist match (reported as "denied", exit 126).
+type deniedError struct{ msg string }
+
+func (d deniedError) Error() string { return d.msg }

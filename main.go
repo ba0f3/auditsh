@@ -153,7 +153,13 @@ func serve(e env) int {
 	le.Bytes, le.Truncated, le.TimedOut = res.bytes, res.truncated, res.timedOut
 	if err != nil {
 		le.Deny = err.Error()
-		fmt.Fprintln(e.stderr, "auditsh: exec failed")
+		var de deniedError
+		if errors.As(err, &de) {
+			le.Decision = "deny"
+			fmt.Fprintln(e.stderr, "auditsh: denied: "+de.msg)
+		} else {
+			fmt.Fprintln(e.stderr, "auditsh: exec failed")
+		}
 	}
 	if res.truncated {
 		fmt.Fprintf(e.stderr, "\nauditsh: output truncated at %d bytes\n", e.opts.maxOutput)

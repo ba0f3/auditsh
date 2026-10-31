@@ -72,6 +72,7 @@ type runOpts struct {
 	sudo        string
 	procDir     string                           // default "/proc"
 	lookupUser  func(uid string) (string, error) // default lookupUserName
+	javaUsers   string                           // default javaUsersFile
 }
 
 func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
@@ -108,7 +109,7 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 	if o.checkBin {
 		check := func(p string, uid uint32) error { return checkTree(p, uid) }
 		if r.Resolve {
-			check = func(p string, uid uint32) error { _, err := checkChain(p, uid); return err }
+			check = checkResolved
 		}
 		if err := check(r.Path, o.binOwnerUID); err != nil {
 			return result{exit: 126}, fmt.Errorf("binary check: %w", err)
@@ -135,12 +136,22 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 		}
 		pid, err := jvmPid(args)
 		if err != nil {
-			return result{exit: 126}, err
+			return result{exit: 126}, deniedError{err.Error()}
 		}
 		owner, err := jvmOwner(procDir, pid, lookup)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "auditsh: "+err.Error())
-			return result{exit: 126}, err
+			return result{exit: 126}, deniedError{err.Error()}
+		}
+		ju := o.javaUsers
+		if ju == "" {
+			ju = javaUsersFile
+		}
+		users, err := loadJavaUsers(ju, o.checkBin, o.binOwnerUID)
+		if err != nil {
+			return result{exit: 126}, deniedError{"no java users configured"}
+		}
+		if !users[owner] {
+			return result{exit: 126}, deniedError{"pid owner " + owner + " is not a configured java user"}
 		}
 		name = o.sudo
 		argv = append([]string{"-n", "-u", owner, "--", r.Path, r.Name}, args...)

@@ -65,6 +65,30 @@ func checkChain(path string, ownerUID uint32) (string, error) {
 	}
 }
 
+// resolveTargets is the complete set of files a `resolve: true` chain may end at (the
+// iptables multi-call binaries: nft and legacy backends, and pre-1.8 xtables-multi on
+// RHEL/CentOS 7). Only the names in resolveNames may use resolve, each at /usr/sbin/<name>.
+var resolveTargets = map[string]bool{
+	"/usr/sbin/xtables-nft-multi":    true,
+	"/usr/sbin/xtables-legacy-multi": true,
+	"/usr/sbin/xtables-multi":        true,
+	"/sbin/xtables-multi":            true,
+}
+
+var resolveNames = map[string]bool{"iptables": true, "iptables-save": true, "ip6tables": true, "ip6tables-save": true}
+
+// checkResolved runs checkChain and requires the final target to be a known multi-call binary.
+func checkResolved(path string, ownerUID uint32) error {
+	t, err := checkChain(path, ownerUID)
+	if err != nil {
+		return err
+	}
+	if !resolveTargets[t] {
+		return fmt.Errorf("%s: resolves to %s, not a known xtables binary", path, t)
+	}
+	return nil
+}
+
 // internalFileRead serves a fixed set of OS identification files (no cat binary).
 const internalFileRead = "internal:fileread"
 

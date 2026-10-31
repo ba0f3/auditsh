@@ -128,6 +128,9 @@ func parseConfig(b []byte) (*config, error) {
 		if r.JVM && (r.Sudo || r.Resolve || internal || !jvmTools[r.Name]) {
 			return nil, fmt.Errorf("rule %d: jvm rule must be jcmd/jstat, not sudo/internal", i)
 		}
+		if r.Resolve && (!resolveNames[r.Name] || r.Path != "/usr/sbin/"+r.Name) {
+			return nil, fmt.Errorf("rule %d: resolve only for /usr/sbin/{iptables,ip6tables}[-save]", i)
+		}
 		if r.Path == internalFileRead && (len(r.Args) != 1 || !osFiles[r.Args[0]]) {
 			return nil, fmt.Errorf("rule %d: fileread rule needs exactly one fixed os file path", i)
 		}

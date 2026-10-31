@@ -16,7 +16,8 @@
 #   auditsh-setup --local --key '...'   use the packaged binary/allowlist/sudoers, enable SSH (no download)
 #   auditsh-setup --account-only        postinst: create/refresh the botaudit account only (no SSH access)
 #   --java-user U (repeatable, with install or --local): allow jcmd/jstat diagnostics of JVMs owned by U via
-#   /usr/local/sbin/auditsh-jvm; writes /etc/sudoers.d/botaudit-jvm (U must exist, not root, not uid 0).
+#   /usr/local/sbin/auditsh-jvm; writes /etc/sudoers.d/botaudit-jvm + /etc/auditsh/java-users (U must exist,
+#   not root, not uid 0). Regenerated every run: install/--local WITHOUT --java-user removes both (revoke).
 #   auditsh-setup --uninstall --package prerm: undo account/SSH, leave package-owned files to dpkg/rpm
 # The whole script is a function called on the last line, so a truncated download runs nothing.
 set -eu
@@ -34,6 +35,7 @@ KEYS_FILE=$KEYS_DIR/botaudit
 SSHD_DROPIN=/etc/ssh/sshd_config.d/50-botaudit.conf
 SUDOERS=/etc/sudoers.d/botaudit
 SUDOERS_JVM=/etc/sudoers.d/botaudit-jvm
+JAVA_USERS_FILE=/etc/auditsh/java-users
 JVM_HELPER=/usr/local/sbin/auditsh-jvm
 JAVA_USERS=
 USER_NAME=botaudit
@@ -136,7 +138,8 @@ check_uid_free
 
 if [ "$DRY" = 1 ]; then
   [ "$MODE" = local ] || say "would install $BIN, $JVM_HELPER, $CONF_DIR/allowlist.yaml, $SUDOERS"
-  [ -z "$JAVA_USERS" ] || say "would write $SUDOERS_JVM for java user(s) $JAVA_USERS"
+  if [ -n "$JAVA_USERS" ]; then say "would write $SUDOERS_JVM and $JAVA_USERS_FILE for java user(s) $JAVA_USERS"
+  else say "would remove $SUDOERS_JVM and $JAVA_USERS_FILE if present (no --java-user = revoke)"; fi
   say "would install $SSHD_DROPIN, $KEYS_FILE ($NKEYS key line(s))"
   id "$USER_NAME" >/dev/null 2>&1 || say "would create user $USER_NAME uid/gid $FIXED_UID home $HOME_DIR shell $BIN"
   say "would comment out AcceptEnv, run sshd -t/-T checks, reload sshd"
@@ -157,7 +160,14 @@ if [ "$MODE" != local ]; then
   install -o root -g root -m 0440 "$SRC/sudoers.botaudit" "$SUDOERS"
 fi
 setup_account
-if [ -n "$JAVA_USERS" ]; then install -o root -g root -m 0440 "$TMP/sudoers.jvm" "$SUDOERS_JVM"; fi
+# Regenerated from the flags on every install/--local run; no --java-user revokes JVM access.
+if [ -n "$JAVA_USERS" ]; then
+  install -o root -g root -m 0440 "$TMP/sudoers.jvm" "$SUDOERS_JVM"
+  printf '%s\n' "$JAVA_USERS" | tr ',' '\n' > "$TMP/java-users"
+  install -o root -g root -m 0644 "$TMP/java-users" "$JAVA_USERS_FILE"
+else
+  rm -f "$SUDOERS_JVM" "$JAVA_USERS_FILE"
+fi
 visudo -c >/dev/null || die "visudo -c failed after install"
 enable_ssh
 STAGED=0
@@ -246,7 +256,7 @@ reload_sshd() {
 
 # Files the install touches. Each is saved, or recorded as absent, before the first write.
 tracked() {
-  printf '%s\n' "$BIN" "$JVM_HELPER" "$CONF_DIR/allowlist.yaml" "$SUDOERS" "$SUDOERS_JVM" "$SSHD_DROPIN" "$KEYS_FILE" \
+  printf '%s\n' "$BIN" "$JVM_HELPER" "$CONF_DIR/allowlist.yaml" "$SUDOERS" "$SUDOERS_JVM" "$JAVA_USERS_FILE" "$SSHD_DROPIN" "$KEYS_FILE" \
     /etc/shells /etc/cron.deny /etc/at.deny /etc/ssh/sshd_config
   for f in /etc/ssh/sshd_config.d/*.conf; do [ -f "$f" ] && printf '%s\n' "$f"; done
   return 0
@@ -352,7 +362,7 @@ uninstall() {
     if [ "$DRY" = 0 ] && getent group "$USER_NAME" >/dev/null; then groupdel "$USER_NAME" || true; fi
   fi
   run rm -rf -- "$HOME_DIR"
-  run rm -f "$SUDOERS_JVM"   # generated, never package-owned
+  run rm -f "$SUDOERS_JVM" "$JAVA_USERS_FILE"   # generated, never package-owned
   if [ "$PKG" = 0 ]; then run rm -f "$SUDOERS" "$BIN" "$JVM_HELPER"; run rm -rf -- "$CONF_DIR"; fi
   if [ -f "$KEYS_DIR/.auditsh-created" ]; then run rm -f "$KEYS_DIR/.auditsh-created"; run rmdir "$KEYS_DIR" || true; fi
   if [ -f /etc/shells ]; then run sed -i '\#^/usr/local/sbin/auditsh$#d' /etc/shells; fi

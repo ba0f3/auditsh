@@ -29,7 +29,7 @@ case $tool in
   jcmd)
     pid=$1
     case "$#|$2|${3-}" in
-      "2|GC.heap_info|"|"2|Thread.print|"|"2|VM.flags|"|"2|VM.uptime|"|"2|VM.version|"|"2|GC.class_histogram|") ;;
+      "2|GC.heap_info|"|"2|Thread.print|"|"2|VM.flags|"|"2|VM.uptime|"|"2|VM.version|") ;;
       "3|VM.native_memory|summary") ;;
       *) die "jcmd form not allowed" ;;
     esac ;;
@@ -45,6 +45,9 @@ case $tool in
   *) die "tool not allowed" ;;
 esac
 num "$pid" || die "pid must be digits"
+# starttime (field 22 of /proc/<pid>/stat; fields counted after the last ')' since comm may hold spaces).
+start() { sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}'; }
+st0=$(start); [ -n "$st0" ] || die "no such pid"
 
 me=$(id -u)
 [ "$me" != 0 ] || die "refusing to run as root"
@@ -56,4 +59,7 @@ bin=${exe%/java}
 safe "$exe"
 safe "$bin/$tool"
 [ -x "$bin/$tool" ] || die "$bin/$tool missing (JRE without JDK tools?)"
+# pid reuse check right before exec. Residual race: the pid can still be recycled between this read
+# and the tool's attach; the new process would have to be ours (same uid) to be attachable at all.
+[ "$(start)" = "$st0" ] || die "pid $pid changed during checks"
 exec /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C "$bin/$tool" "$@"

@@ -55,17 +55,20 @@ ls /etc/sudoers.d/botaudit-jvm 2>&1
 t "--java-user jvmapp (generated sudoers)"
 useradd -M -s /usr/sbin/nologin jvmapp
 auditsh-setup --local --java-user jvmapp --java-user jvmapp >/dev/null; echo "rc=$?"
-stat -c '%U:%G %a %n' /usr/local/sbin/auditsh-jvm /etc/sudoers.d/botaudit-jvm; grep -v '^#' /etc/sudoers.d/botaudit-jvm; visudo -c >/dev/null && echo visudo-ok
+stat -c '%U:%G %a %n' /usr/local/sbin/auditsh-jvm /etc/sudoers.d/botaudit-jvm /etc/auditsh/java-users; cat /etc/auditsh/java-users; grep -v '^#' /etc/sudoers.d/botaudit-jvm; visudo -c >/dev/null && echo visudo-ok
 sudo -l -U botaudit | grep -E 'auditsh-jvm|ss -tlnp' | sed 's/^ *//'
 
 t "e2e ssh"; /src/sl & sleep 0.3; /usr/sbin/sshd -o ListenAddress=127.0.0.1 -p 2222
 O="-i /root/tk -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=error"
 ssh $O botaudit@127.0.0.1 uptime; echo "rc=$?"; ssh $O botaudit@127.0.0.1 'ss -tlnp' | head -2; echo "ss rc=$?"; ssh $O botaudit@127.0.0.1 'sh -c id'; echo "rc=$?"; ssh $O -tt botaudit@127.0.0.1 </dev/null; echo "rc=$?"
-for c in 'uname -a' 'getent group' 'sshd -T' 'dpkg-query -l' 'rpm -qa' 'who'; do
+for c in 'uname -a' 'getent group' 'sshd -T' 'dpkg-query -l' 'rpm -qa' 'who' 'crontab -l -u root' 'last -n 5' 'wtmpdb last -n 5'; do
   # shellcheck disable=SC2029  # $c is a fixed local test string
   ssh $O botaudit@127.0.0.1 "$c" >/tmp/o 2>&1; echo "[$c] rc=$? lines=$(wc -l </tmp/o) first=$(head -c 40 /tmp/o | head -1)"
 done
 ssh $O botaudit@127.0.0.1 'crontab -e -u root'; echo "crontab -e rc=$?"
+# shellcheck disable=SC2029  # $c is a fixed local test string
+for c in 'wtmpdb last' 'wtmpdb last -n 0' 'wtmpdb boot'; do ssh $O botaudit@127.0.0.1 "$c" >/dev/null 2>&1; echo "[$c] rc=$?"; done
+ssh $O botaudit@127.0.0.1 'jcmd 1 VM.uptime' 2>&1 | tail -1
 t "java: denied forms (rc=126 each, sudo/helper never reached for pid 1 = not java)"
 for c in 'jcmd 1 VM.uptime' 'jcmd 1 GC.heap_dump /tmp/x' 'jcmd abc GC.heap_info' 'jcmd 1 GC.heap_info extra' 'jcmd 1 VM.command_line' 'jstat -gcutil 1 1000 11'; do
   # shellcheck disable=SC2029  # $c is meant to be sent verbatim
@@ -74,12 +77,14 @@ t "java: botaudit cannot reach helper as root, only as jvmapp"
 su -s /bin/sh botaudit -c 'sudo -n -u root /usr/local/sbin/auditsh-jvm jcmd 1 VM.uptime' 2>&1 | tail -1
 su -s /bin/sh botaudit -c 'sudo -n -u jvmapp /usr/local/sbin/auditsh-jvm jcmd 1 GC.heap_dump /tmp/x' 2>&1 | tail -1
 su -s /bin/sh botaudit -c 'sudo -n -u jvmapp /usr/local/sbin/auditsh-jvm jcmd 1 VM.uptime' 2>&1 | tail -1
+su -s /bin/sh botaudit -c 'sudo -n -u jvmapp /usr/local/sbin/auditsh-jvm jcmd 1 GC.class_histogram' 2>&1 | tail -1
+su -s /bin/sh botaudit -c 'sudo -n -u jvmapp /usr/local/sbin/auditsh-jvm jcmd 1 Thread.print' 2>&1 | tail -1
 t "iptables (resolve: true) + OS identification"
-for c in 'iptables -S' 'iptables-save' 'ip6tables -S' 'ip6tables-save' 'cat /etc/os-release' 'cat /etc/redhat-release' 'cat /etc/debian_version' 'cat /etc/lsb-release' 'lsb_release -a'; do
+for c in 'iptables -S' 'iptables -L -n -v' 'iptables-save' 'ip6tables -S' 'ip6tables -L -n -v' 'ip6tables-save' 'cat /etc/os-release' 'cat /etc/redhat-release' 'cat /etc/debian_version' 'cat /etc/lsb-release' 'lsb_release -a'; do
   # shellcheck disable=SC2029  # $c is a fixed local test string
   ssh $O botaudit@127.0.0.1 "$c" >/tmp/o 2>&1; echo "[$c] rc=$? lines=$(wc -l </tmp/o) first=$(head -1 /tmp/o | cut -c1-50)"
 done
-for c in 'iptables -F' 'iptables -L' 'iptables-save -f /tmp/x' 'ip6tables -S INPUT' 'cat /usr/lib/os-release' 'cat /etc/shadow' 'cat /etc/issue'; do
+for c in 'iptables -F' 'iptables -L' 'iptables -L -n' 'iptables -t nat -S' 'iptables -L -n -v -x' 'iptables-save -f /tmp/x' 'ip6tables -S INPUT' 'cat /usr/lib/os-release' 'cat /etc/shadow' 'cat /etc/issue'; do
   # shellcheck disable=SC2029  # $c is a fixed local test string
   ssh $O botaudit@127.0.0.1 "$c" >/dev/null 2>&1; echo "[$c] rc=$?"
 done
@@ -91,6 +96,19 @@ t "iptables: chain through a non-root-safe dir is refused (126)"
 a=$(readlink /etc/alternatives/iptables) && cp "$(readlink -f /usr/sbin/iptables)" /tmp/evil && ln -sfn /tmp/evil /etc/alternatives/iptables &&
   { ssh $O botaudit@127.0.0.1 'iptables -S' >/dev/null 2>&1; echo "tampered rc=$?"; ln -sfn "$a" /etc/alternatives/iptables; rm -f /tmp/evil; }
 readlink /etc/alternatives/iptables
+t "iptables: chain to a root-owned but non-xtables binary is refused (126)"
+if [ -e /usr/bin/true ]; then a=$(readlink /etc/alternatives/iptables); ln -sfn /usr/bin/true /etc/alternatives/iptables
+  ssh $O botaudit@127.0.0.1 'iptables -S' >/dev/null 2>&1; echo "true-target rc=$?"; ln -sfn "$a" /etc/alternatives/iptables; fi
+if [ -x /usr/sbin/iptables-legacy ] && command -v update-alternatives >/dev/null; then
+  t "iptables legacy backend"
+  update-alternatives --set iptables /usr/sbin/iptables-legacy >/dev/null
+  for c in 'iptables -S' 'iptables -L -n -v' 'iptables-save'; do
+    # shellcheck disable=SC2029  # $c is a fixed local test string
+    ssh $O botaudit@127.0.0.1 "$c" >/tmp/o 2>&1; echo "[legacy $c] rc=$? first=$(head -1 /tmp/o | cut -c1-50)"; done
+  update-alternatives --set iptables /usr/sbin/iptables-nft >/dev/null; readlink /etc/alternatives/iptables
+fi
+t "L-3: --local without --java-user revokes JVM access"
+auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null; echo "rc=$?"; for f in /etc/sudoers.d/botaudit-jvm /etc/auditsh/java-users; do [ -e "$f" ] && echo "STILL $f" || echo "gone $f"; done
 pkill sshd; grep -o '"phase":"[a-z]*"\|"decision":"[a-z]*"\|"key_fp":"SHA256:[A-Za-z0-9]\{6\}' /tmp/syslog.txt | tr '\n' ' '; echo
 
 t "remove: $DEL"

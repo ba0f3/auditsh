@@ -42,15 +42,17 @@ The `botaudit` account can run only the exact argv forms in `/etc/auditsh/allowl
 `systemctl status <unit> --no-pager`, `journalctl -u <unit> --since <today|yesterday|N h ago|YYYY-MM-DD[ HH:MM[:SS]]> --no-pager [-n N]`,
 sudo: `ss -tlnp`, `ss -ulnp`, `dmesg -T [--level=err|err,warn|emerg,alert,crit,err,warn]`.
 JVM (as the JVM's user, needs `--java-user`): `jcmd`/`jstat` forms, see [Java/JVM diagnostics](#javajvm-diagnostics-opt-in-per-java-user).
-System audit: `who`, `last -n N` (N 1-9999), `uname -a`, `dpkg-query -l` (deb) / `rpm -qa` (rpm),
+System audit: `who`, `last -n N` (N 1-9999), `wtmpdb last -n N` (deb; Debian 13+ replaced util-linux `last`), `uname -a`, `dpkg-query -l` (deb) / `rpm -qa` (rpm),
 `systemctl list-units --failed --no-pager`, `systemctl list-timers --no-pager`, `getent passwd|group`,
-sudo: `sshd -T`, `crontab -l -u root`, `nft list ruleset`, `auditctl -l`, `iptables -S`, `iptables-save`, `ip6tables -S`,
-`ip6tables-save` (exact argv; see [Symlinked binaries](#symlinked-binaries-iptables)).
+sudo: `sshd -T`, `crontab -l -u root`, `nft list ruleset`, `auditctl -l`, `iptables -S`, `iptables -L -n -v`, `iptables-save`,
+`ip6tables -S`, `ip6tables -L -n -v`, `ip6tables-save` (exact argv; see [Symlinked binaries](#symlinked-binaries-iptables)).
 OS identification (auditsh's own reader, no `cat` binary): `cat /etc/os-release|/etc/redhat-release|/etc/debian_version|/etc/lsb-release`,
 and `lsb_release -a` (deb, if installed).
 Not available: less, more, vi, find, tar, awk, sed, sh, bash, env, xargs, tee, python, git, or anything else on GTFOBins.
 **pmap was dropped.** It needs a PID under sudo, and fixed-argv sudoers can't express that (see design.md §4).
 Use `cat /proc/<pid>/smaps_rollup` instead.
+`crontab -l -u root` returns root's crontab verbatim: never put passwords or tokens in cron lines (use a root-only
+file or credential store the job reads).
 
 ### Symlinked binaries (iptables)
 
@@ -59,7 +61,10 @@ auditsh normally refuses any binary path containing a symlink. `/usr/sbin/iptabl
 those rules carry `resolve: true`. Before every run auditsh walks the chain (at most 8 links): every link
 must be root-owned, every directory holding a link or the target (up to `/`) must be root-owned, not a
 symlink and not group/other-writable, and the final file must be a root-owned, not group/other-writable
-regular file. A dangling link, a loop or a missing iptables fails cleanly (exit 126). It then runs
+regular file, and it must be one of the fixed xtables binaries (`/usr/sbin/xtables-nft-multi`,
+`/usr/sbin/xtables-legacy-multi`, `/usr/sbin/xtables-multi`, `/sbin/xtables-multi`; `resolveTargets` in resolve.go).
+`resolve: true` is accepted only for `/usr/sbin/{iptables,ip6tables}[-save]`. No `-t TABLE` form: `iptables-save`
+already prints every table. A dangling link, a loop or a missing iptables fails cleanly (exit 126). It then runs
 `sudo -n -- /usr/sbin/iptables -S`, the original path: sudo matches the sudoers entry (it compares the
 resolved file) and the multi-call binary dispatches on argv[0] = `iptables`. sudoers uses `""` for
 `iptables-save`/`ip6tables-save` so no argument (e.g. `-f FILE`) is accepted. Only root can change the
@@ -76,17 +81,19 @@ be `/etc/*-release|version` or `/usr/lib/*-release`, a world-readable root-owned
 ## Java/JVM diagnostics (opt-in per Java user)
 Forms (block `BEGIN Java/JVM diagnostics` in allowlist.yaml): `jcmd <pid> GC.heap_info|Thread.print|VM.flags|VM.uptime|VM.version`,
 `jcmd <pid> VM.native_memory summary` (needs `-XX:NativeMemoryTracking=summary` on the JVM), `jstat -gcutil <pid> [<100..1000 ms> <1..10>]`.
-`GC.class_histogram` is shipped **commented out**: it forces a full, stop-the-world GC (seconds on big heaps). Uncomment it to opt in.
+`GC.class_histogram` is not offered (it forces a full, stop-the-world GC) and the helper refuses it even if added to the allowlist.
+`Thread.print` output includes thread names and frames, which can carry user/tenant/job names; treat it as sensitive.
 Never allowed, in the allowlist **and** in the helper's own table: `GC.heap_dump`, `JFR.*`, `VM.command_line` and
 `VM.system_properties` (often contain secrets), `VM.set_flag`, `ManagementAgent.*`, `Compiler.*`, `JVMTI.agent_load`, `System.*`, `help`, `-J...`.
 
 Enable: `auditsh-setup --local --java-user app [--java-user app2]` (or `install.sh ... --java-user app`). Each name must match
-`^[a-z_][a-z0-9_-]{0,31}$`, exist, and not be root/uid 0/botaudit. This writes `/etc/sudoers.d/botaudit-jvm` (0440, generated, not
-package-owned, removed on uninstall/package removal):
+`^[a-z_][a-z0-9_-]{0,31}$`, exist, and not be root/uid 0/botaudit. This writes `/etc/sudoers.d/botaudit-jvm` (0440) and `/etc/auditsh/java-users`
+(root 0644, one name per line), both generated, not package-owned, removed on uninstall/package removal:
 ```
 botaudit ALL=(app,app2) NOPASSWD: /usr/local/sbin/auditsh-jvm
 ```
-Rerunning without `--java-user` keeps the existing file; to revoke, `rm /etc/sudoers.d/botaudit-jvm`.
+Both files are regenerated from the flags on **every** install / `--local` run: the list is exactly the `--java-user` flags of the
+last run, and a run without `--java-user` removes both (revokes JVM access). `--account-only` (package postinst) leaves them alone.
 
 **Privilege design.** HotSpot attach (jcmd) and hsperfdata (jstat) work only as the JVM's own uid, and the pid is a variable.
 Rejected options:
@@ -97,7 +104,8 @@ Rejected options:
 Chosen: sudo may only run one fixed program, `/usr/local/sbin/auditsh-jvm` (root:root 0755, ~60 lines of POSIX sh), and only **as a
 configured, non-root Java user**, never as root. Sudoers cannot constrain its args without a wildcard, so the helper is the argv gate:
 1. auditsh: the client argv matches a `jvm: true` rule (exactly one pid arg `[1-9][0-9]{0,9}`), then auditsh reads
-   `/proc/<pid>/status`, requires `Name: java` and one non-root uid (real=effective=saved=fs), maps it to a user name and
+   `/proc/<pid>/status`, requires `Name: java` and one non-root uid (real=effective=saved=fs), maps it to a user name, requires that name in
+   `/etc/auditsh/java-users` (root-owned, checked like the config; otherwise `auditsh: denied: ...`, exit 126, sudo never runs) and
    runs `/usr/bin/sudo -n -u <user> -- /usr/local/sbin/auditsh-jvm <jcmd|jstat> <args>` (same timeout, 1 MiB cap, clean env, audit log).
 2. sudo refuses users not listed by `--java-user`.
 3. The helper, as that user: refuses root; fixed table of forms (anything else exits 126); pid digits only; `/proc/<pid>/status`
@@ -105,6 +113,9 @@ configured, non-root Java user**, never as root. Sudoers cannot constrain its ar
    sibling `jcmd`/`jstat`, plus every parent dir, are root-owned, not symlinks, not group/world-writable; then
    `exec env -i PATH=/usr/bin:/bin LC_ALL=C <jdk>/bin/<tool> <validated args>`. The tool comes from the target JVM's own JDK
    (version-matched, never from PATH or the caller). A JRE without `jcmd`/`jstat`, or a JDK owned by the app user, is refused.
+   The helper reads the pid's starttime (`/proc/<pid>/stat` field 22) first and again just before exec and refuses if it changed.
+   Residual race: the pid can still be recycled between that last read and the tool's attach; the new process would have to run as
+   the same Java user to be attachable, so the worst case is a read-only diagnostic of another JVM of that same user.
 
 Not `NOEXEC`: the helper has to exec jcmd. Worst case for a helper bug is code running as the Java user, not root.
 
@@ -246,9 +257,10 @@ sed -i '\#^/usr/local/sbin/auditsh$#d' /etc/shells; sed -i '/^botaudit$/d' /etc/
 - Binary: root 0755. Config: root 0644 in a root 0755 dir. Both are checked at runtime.
 - sshd: no TTY, all forwarding off, publickey only, low `MaxSessions`, client-alive timeouts.
   In authorized_keys, `restrict,command=` is a second layer in case the Match block gets removed.
-- sudo: fixed argv only, no wildcards or regex, `NOEXEC`, `env_reset`, `!setenv`, `secure_path`, `log_output`,
-  `command_timeout=15s`. With `log_output`, sudo runs the command on its own pty/session as root, so
-  auditsh's group kill can't reach it. `command_timeout` and auditsh's WaitDelay bound it instead.
+- sudo: fixed argv only, no wildcards or regex, `NOEXEC`, `env_reset`, `!setenv`, `secure_path`, `!log_output`,
+  `command_timeout=15s`. sudo I/O logging is off on purpose: it would keep copies of `crontab`, `sshd -T` and firewall
+  output under /var/log/sudo-io. auditsh's own audit log (argv, exit, sizes) still records every call. sudo may still run the
+  command in its own session, so `command_timeout` and auditsh's WaitDelay bound it, not only auditsh's group kill.
   No sudo 1.9.10 features are used, so older sudo works too.
 
 ## Residual risks and limits
