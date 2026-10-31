@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func defaultCfg(t *testing.T) *config {
+func defaultCfg(t testing.TB) *config {
 	t.Helper()
 	b, err := os.ReadFile("allowlist.yaml")
 	if err != nil {
@@ -510,6 +510,45 @@ func TestNoKeyFPDenied(t *testing.T) {
 	os.WriteFile(p, []byte("publickey ssh-ed25519 !!notbase64!!\n"), 0o600)
 	if keyFingerprint(p) != "" || keyFingerprint(filepath.Join(t.TempDir(), "gone")) != "" {
 		t.Fatal("bad auth info produced a fingerprint")
+	}
+}
+
+// Output that exactly fills the cap and then continues must be marked truncated and the
+// command stopped (previously the overflow write was silently dropped and it ran to timeout).
+func TestCapExactBoundary(t *testing.T) {
+	start := time.Now()
+	_, out, errs, le := run(t, fake(t, "head -c 1000 /dev/zero; sleep 0.2; echo more; sleep 10"), "fake",
+		runOpts{maxOutput: 1000, timeout: 5 * time.Second})
+	if len(out) != 1000 || le.Bytes != 1000 || !le.Truncated || !strings.Contains(errs, "truncated") {
+		t.Fatalf("len=%d %+v", len(out), le)
+	}
+	if le.TimedOut || time.Since(start) > 3*time.Second {
+		t.Fatalf("command not killed at cap: %+v", le)
+	}
+	// exactly at the cap with nothing more is NOT truncated
+	_, out, _, le = run(t, fake(t, "head -c 1000 /dev/zero"), "fake", runOpts{maxOutput: 1000})
+	if len(out) != 1000 || le.Truncated {
+		t.Fatalf("exact-fit output marked truncated: %+v", le)
+	}
+}
+
+func TestLogEscapesDELAndC1(t *testing.T) {
+	s := encodeLog(logEntry{User: "a\x7fb\u0085c\u009bd\u0080", SSHConn: "\u2028"})
+	for _, r := range s {
+		if r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == 0x2028 {
+			t.Fatalf("unescaped %U in %q", r, s)
+		}
+	}
+	var le logEntry
+	if err := json.Unmarshal([]byte(s), &le); err != nil || le.User != "a\x7fb\u0085c\u009bd\u0080" {
+		t.Fatalf("roundtrip: %v %q", err, le.User)
+	}
+	// through serve(): a DEL/C1 in the SSH_CONNECTION-derived field reaches syslog escaped
+	var line string
+	var b bytes.Buffer
+	serve(env{raw: "x", cfg: fake(t, "true"), stdout: &b, stderr: &b, user: "u\x7f\u009b", logf: func(s string) error { line = s; return nil }})
+	if strings.ContainsAny(line, "\x7f\u009b") {
+		t.Fatalf("raw DEL/C1 in log line %q", line)
 	}
 }
 

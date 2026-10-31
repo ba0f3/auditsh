@@ -1,0 +1,4 @@
+go test fuzz v1
+string("/proc/1000000000/status")
+[]byte("0")
+uint16(170)

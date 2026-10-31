@@ -1,0 +1,6 @@
+go test fuzz v1
+string("0")
+string("0")
+string("")
+string("\xaa\"&&&&&&&&\xc7&&0&&\xf0&&&0&0&\"\"00&&\xfb0&&&&\xa8&")
+string("0")

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("journalctl -u 0.service --since today --no-pager -n 0")

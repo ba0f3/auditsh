@@ -10,7 +10,7 @@ env:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,6 +27,10 @@ jobs:
           set -eu
           go vet ./...
           go test -race -count=1 ./...
+          # 30s smoke fuzz per native fuzz target (fuzz_test.go); long runs are done offline.
+          for f in FuzzParseCommand FuzzAllowlistExec FuzzEnvSanitize FuzzLogEncoder FuzzProcRead; do
+            go test -run '^$' -fuzz "^$f\$" -fuzztime 30s -parallel 2 .
+          done
           for arch in amd64 arm64; do
             GOARCH=$arch OUT=/tmp/a-$arch ./build.sh "$GITHUB_SHA"
             GOARCH=$arch OUT=/tmp/b-$arch ./build.sh "$GITHUB_SHA"
@@ -38,6 +42,11 @@ jobs:
           export PATH="$PATH:/usr/sbin"
           command -v visudo >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q sudo; }
           ./pkg.sh "$GITHUB_SHA"
+      - name: govulncheck v1.9.0 (version-pinned module, checksum-verified via go.sum DB)
+        run: |
+          set -eu
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
       - run: shellcheck install.sh build.sh pkg.sh packaging/*.sh tests/chroot-test.sh tests/pkg-test.sh deploy/auditsh-jvm .github/scripts/check-action-pins.sh
       - name: Verify action SHA pins match their tags
         run: .github/scripts/check-action-pins.sh

@@ -1,0 +1,6 @@
+go test fuzz v1
+string("\x1a000")
+string("&&s")
+string("00")
+string("0\xa2\xcb")
+string("00")

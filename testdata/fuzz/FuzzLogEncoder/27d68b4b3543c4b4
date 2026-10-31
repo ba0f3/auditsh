@@ -1,0 +1,6 @@
+go test fuzz v1
+string("\x9f")
+string("0")
+string("d+9V9_\xe4\xb8\xe6")
+string("TTTTTTT00")
+string("0")

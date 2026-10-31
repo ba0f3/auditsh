@@ -1,0 +1,6 @@
+go test fuzz v1
+string("&")
+string("&0\u009b0&")
+string("\u2028\u2029")
+string("&0")
+string("&000000000&")

@@ -81,7 +81,7 @@ be `/etc/*-release|version` or `/usr/lib/*-release`, a world-readable root-owned
 ## Java/JVM diagnostics (opt-in per Java user)
 Forms (block `BEGIN Java/JVM diagnostics` in allowlist.yaml): `jcmd <pid> GC.heap_info|Thread.print|VM.flags|VM.uptime|VM.version`,
 `jcmd <pid> VM.native_memory summary` (needs `-XX:NativeMemoryTracking=summary` on the JVM), `jstat -gcutil <pid> [<100..1000 ms> <1..10>]`.
-`GC.class_histogram` is not offered (it forces a full, stop-the-world GC) and the helper refuses it even if added to the allowlist.
+Commands that force a full, stop-the-world GC (heap histograms, heap dumps) are not offered, and the helper refuses them even if added to the allowlist.
 `Thread.print` output includes thread names and frames, which can carry user/tenant/job names; treat it as sensitive.
 Never allowed, in the allowlist **and** in the helper's own table: `GC.heap_dump`, `JFR.*`, `VM.command_line` and
 `VM.system_properties` (often contain secrets), `VM.set_flag`, `ManagementAgent.*`, `Compiler.*`, `JVMTI.agent_load`, `System.*`, `help`, `-J...`.
@@ -246,6 +246,26 @@ pkill -u botaudit; userdel -r botaudit
 rm /etc/sudoers.d/botaudit /usr/local/sbin/auditsh; rm -r /etc/auditsh
 sed -i '\#^/usr/local/sbin/auditsh$#d' /etc/shells; sed -i '/^botaudit$/d' /etc/cron.deny /etc/at.deny
 ```
+
+## Fuzzing
+
+`fuzz_test.go` has five Go native fuzz targets; CI runs each for 30s, and the committed seed
+corpus lives in `testdata/fuzz/<Target>/`.
+
+| Target | Property |
+|---|---|
+| `FuzzParseCommand` | `SSH_ORIGINAL_COMMAND` split never panics; accepted input is <=1024 bytes of printable ASCII with no shell metacharacters and 1-17 args |
+| `FuzzAllowlistExec` | every accepted command is re-checked against an independent parse of `allowlist.yaml`; exec argv is exactly `[path args...]` or `[sudo -n -- path args...]`, args never empty, `--`, control or metachars. Internal `cat /proc/...` rules are served in-process and never exec'd |
+| `FuzzEnvSanitize` | with arbitrary caller env, a real child (`/usr/bin/env`) sees exactly the fixed clean env |
+| `FuzzLogEncoder` | the audit record is one line of valid JSON with no C0/DEL/C1 controls or U+2028/2029, and round-trips |
+| `FuzzProcRead` | non-allowlisted paths are never opened; output <= cap with exact byte count and truncated flag |
+
+```sh
+go test -run '^$' -fuzz '^FuzzLogEncoder$' -fuzztime 30m -timeout 0 .
+```
+
+On a paused VM the fuzzer may report "fuzzing process hung"; replay the reported input with
+`go test -run 'FuzzX/<id>'` before treating it as a bug.
 
 ## Threat model
 - Attacker: whoever holds the agent key, or a prompt-injected agent. The goal is that they can't write, exec arbitrary code, pivot, or keep access.

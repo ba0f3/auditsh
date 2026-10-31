@@ -1,0 +1,2 @@
+go test fuzz v1
+string("systemctl status 0.0%000 0")

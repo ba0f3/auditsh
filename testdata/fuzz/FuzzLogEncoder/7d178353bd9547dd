@@ -1,0 +1,6 @@
+go test fuzz v1
+string("botaudit")
+string("ps aux")
+string("reasddddon")
+string("0")
+string("1.2.3%000 5.6.7.8 22")

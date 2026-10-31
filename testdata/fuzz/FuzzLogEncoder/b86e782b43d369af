@@ -1,0 +1,6 @@
+go test fuzz v1
+string("\b\x97\x95\x95\x7f")
+string("\u0085\xc2")
+string("\u2028\u2029")
+string("\xff\xfe")
+string("\x1b]0;x\a")

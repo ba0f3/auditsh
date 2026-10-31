@@ -1,0 +1,6 @@
+go test fuzz v1
+string("0")
+string("0")
+string("\xa5\U00058cb5")
+string("0")
+string("0")

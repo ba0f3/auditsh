@@ -1,0 +1,6 @@
+go test fuzz v1
+string("\x1c\x1c\x1c\x1c\x1c\x1c\x1c\x1c")
+string("0")
+string("")
+string("4")
+string("0")

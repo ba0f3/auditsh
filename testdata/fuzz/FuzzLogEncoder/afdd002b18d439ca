@@ -1,0 +1,6 @@
+go test fuzz v1
+string("\xfe")
+string("0")
+string("0\xfa\"")
+string("&000\"000\x8a&00\xaf0&0\x930&000&0\xad&0&0000\xc30000000\x99&\xd0&0\x800000\x890")
+string("0\xbd000000\xdc&\xf3\"&\xc500")

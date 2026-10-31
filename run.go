@@ -22,6 +22,23 @@ var cleanEnv = []string{
 	"SYSTEMD_PAGER=", "SYSTEMD_LESS=", "LESSSECURE=1", "SYSTEMD_COLORS=0",
 }
 
+// childEnv returns a fresh copy of the fixed child environment (callers may not alias cleanEnv).
+func childEnv() []string { return append([]string(nil), cleanEnv...) }
+
+// execArgv returns the exact argv for an allowlisted external rule: [path args...] or,
+// for sudo rules, [sudo -n -- path args...]. argv[0] is the binary actually executed.
+// For JVM rules the helper runs as the (already validated) JVM owner.
+func execArgv(r *rule, args []string, sudo, jvmOwner string) []string {
+	if r.JVM {
+		// jvmOwner has already passed the pid-owner and java-users checks in execute.
+		return append([]string{sudo, "-n", "-u", jvmOwner, "--", r.Path, r.Name}, args...)
+	}
+	if r.Sudo {
+		return append([]string{sudo, "-n", "--", r.Path}, args...)
+	}
+	return append([]string{r.Path}, args...)
+}
+
 // capWriter forwards at most limit bytes to w, then drops the rest and calls onFull once.
 type capWriter struct {
 	mu        sync.Mutex
@@ -37,6 +54,13 @@ func (c *capWriter) Write(p []byte) (int, error) {
 	defer c.mu.Unlock()
 	room := c.limit - c.n
 	if room <= 0 {
+		// Output already filled the cap exactly; any further byte means truncation.
+		if len(p) > 0 && !c.truncated {
+			c.truncated = true
+			if c.onFull != nil {
+				c.onFull()
+			}
+		}
 		return len(p), nil
 	}
 	q := p
@@ -65,6 +89,8 @@ type result struct {
 }
 
 type runOpts struct {
+	// procOpen overrides the /proc opener; tests only, production leaves it nil.
+	procOpen    func(string) (io.ReadCloser, error)
 	timeout     time.Duration
 	maxOutput   int64
 	binOwnerUID uint32
@@ -84,7 +110,11 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 		if len(args) != 1 {
 			return result{exit: 2}, errors.New("procread needs one path")
 		}
-		err := procRead(args[0], cw)
+		open := o.procOpen
+		if open == nil {
+			open = openProc
+		}
+		err := procReadWith(args[0], cw, open)
 		res := result{bytes: cw.n, truncated: cw.truncated}
 		if err != nil {
 			res.exit = 1
@@ -120,7 +150,7 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 			}
 		}
 	}
-	name, argv := r.Path, args
+	owner := ""
 	if r.JVM {
 		if o.checkBin {
 			if err := checkTree(o.sudo, o.binOwnerUID); err != nil {
@@ -138,7 +168,7 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 		if err != nil {
 			return result{exit: 126}, deniedError{err.Error()}
 		}
-		owner, err := jvmOwner(procDir, pid, lookup)
+		jo, err := jvmOwner(procDir, pid, lookup)
 		if err != nil {
 			return result{exit: 126}, deniedError{err.Error()}
 		}
@@ -150,21 +180,18 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 		if err != nil {
 			return result{exit: 126}, deniedError{"no java users configured"}
 		}
-		if !users[owner] {
-			return result{exit: 126}, deniedError{"pid owner " + owner + " is not a configured java user"}
+		if !users[jo] {
+			return result{exit: 126}, deniedError{"pid owner " + jo + " is not a configured java user"}
 		}
-		name = o.sudo
-		argv = append([]string{"-n", "-u", owner, "--", r.Path, r.Name}, args...)
-	} else if r.Sudo {
-		name = o.sudo
-		argv = append([]string{"-n", "--", r.Path}, args...)
+		owner = jo
 	}
-	cmd := exec.CommandContext(ctx, name, argv...)
+	full := execArgv(r, args, o.sudo, owner)
+	cmd := exec.CommandContext(ctx, full[0], full[1:]...)
 	// On timeout/cap: SIGKILL the whole process group, then after WaitDelay force-close
 	// our pipe ends so a setsid'd descendant holding stdout cannot stall Wait.
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = waitDelay
-	cmd.Env = cleanEnv
+	cmd.Env = childEnv()
 	cmd.Stdout = cw
 	cmd.Stderr = cw
 	devnull, err := os.Open(os.DevNull)

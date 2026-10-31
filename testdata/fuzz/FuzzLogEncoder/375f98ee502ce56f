@@ -1,0 +1,6 @@
+go test fuzz v1
+string("0\x97")
+string("0\xc2")
+string("0\x80")
+string("\xff0")
+string("0000")
