@@ -31,7 +31,7 @@ commands:
   # Basic host-audit reads. Fixed argv only; nothing here writes, refreshes, execs or pages
   # (systemctl always gets --no-pager; the env already sets PAGER=cat, SYSTEMD_PAGER= ).
   # sudo entries must match deploy/sudoers.botaudit exactly (NOEXEC, no wildcards).
-  # '# deb-only' / '# rpm-only' lines are dropped from the other package's copy by pkg.sh;
+  # '# deb-only' / '# rpm-only' lines are dropped from the other package's copy by packaging/stage.sh;
   # the release allowlist keeps both (a missing binary fails closed at exec time).
   # who: current logins (utmp read).
   - {name: who, path: /usr/bin/who, args: []}

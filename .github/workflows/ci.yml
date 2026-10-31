@@ -23,30 +23,29 @@ jobs:
           echo "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40  /tmp/go.tgz" | sha256sum -c -
           sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
           echo /usr/local/go/bin >> "$GITHUB_PATH"
-      - run: |
+      - name: Install tools (shellcheck from the runner image; actionlint pinned)
+        run: |
           set -eu
-          go vet ./...
-          go test -race -count=1 ./...
-          # 30s smoke fuzz per native fuzz target (fuzz_test.go); long runs are done offline.
-          for f in FuzzParseCommand FuzzAllowlistExec FuzzEnvSanitize FuzzLogEncoder FuzzProcRead; do
-            go test -run '^$' -fuzz "^$f\$" -fuzztime 30s -parallel 2 .
-          done
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: make test
+      - name: Smoke fuzz (30s per native fuzz target; long runs are done offline with make fuzz-long)
+        run: make fuzz FUZZTIME=30s
+      - name: build.sh twice per arch and compare
+        run: |
+          set -eu
           for arch in amd64 arm64; do
             GOARCH=$arch OUT=/tmp/a-$arch ./build.sh "$GITHUB_SHA"
             GOARCH=$arch OUT=/tmp/b-$arch ./build.sh "$GITHUB_SHA"
             cmp /tmp/a-$arch /tmp/b-$arch
           done
-      - name: visudo -cf deb+rpm sudoers, then build packages (pkg.sh)
+      - name: Lint (gofmt, shellcheck, actionlint, action SHA pins, visudo, goreleaser check)
+        run: make lint
+      - name: GoReleaser snapshot twice (pinned + sha256-verified) and compare; goreleaser binaries == build.sh
         run: |
           set -eu
-          export PATH="$PATH:/usr/sbin"
-          command -v visudo >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q sudo; }
-          ./pkg.sh "$GITHUB_SHA"
+          make snapshot && cp release/SHA256SUMS /tmp/sums1
+          make snapshot && cmp /tmp/sums1 release/SHA256SUMS
+          for arch in amd64 arm64; do cmp /tmp/a-$arch release/auditsh-linux-$arch; done
       - name: govulncheck v1.9.0 (version-pinned module, checksum-verified via go.sum DB)
-        run: |
-          set -eu
-          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
-          "$(go env GOPATH)/bin/govulncheck" ./...
-      - run: shellcheck install.sh build.sh pkg.sh packaging/*.sh tests/chroot-test.sh tests/pkg-test.sh deploy/auditsh-jvm .github/scripts/check-action-pins.sh
-      - name: Verify action SHA pins match their tags
-        run: .github/scripts/check-action-pins.sh
+        run: make vuln

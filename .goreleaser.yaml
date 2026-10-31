@@ -1,0 +1,113 @@
+# GoReleaser config: the single build + packaging definition for releases (replaces pkg.sh/nfpm.yaml).
+# Run only via the pinned wrapper: `make snapshot` / `make release` (.github/scripts/goreleaser.sh).
+# Reproducible: same flags as build.sh (CGO_ENABLED=0, -trimpath, -buildvcs=true, no ldflags),
+# and every timestamp (binaries, package files, package headers) is the commit time.
+version: 2
+project_name: auditsh
+
+before:
+  hooks:
+    - sh packaging/stage.sh
+
+builds:
+  - id: auditsh
+    binary: auditsh
+    main: .
+    env: [CGO_ENABLED=0, GOTOOLCHAIN=local, GOFLAGS=]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath, -buildvcs=true]
+    ldflags: [""]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: bin
+    ids: [auditsh]
+    formats: [binary]
+    name_template: "auditsh-linux-{{ .Arch }}"
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+  extra_files: &extra
+    - glob: allowlist.yaml
+    - glob: install.sh
+    - glob: deploy/auditsh-jvm
+    - glob: deploy/sudoers.botaudit
+    - glob: deploy/sshd_config.d/50-botaudit.conf
+
+snapshot:
+  version_template: "0.0.0~git{{ .ShortCommit }}"
+
+changelog:
+  disable: true
+
+nfpms:
+  - id: pkg
+    ids: [auditsh]
+    package_name: auditsh
+    file_name_template: "{{ .ConventionalFileName }}"
+    formats: [deb, rpm]
+    bindir: /usr/local/sbin
+    release: "1"
+    section: admin
+    maintainer: ba0f3 <106477+ba0f3@users.noreply.github.com>
+    description: Read-only SSH audit ForceCommand/login shell for the botaudit account
+    homepage: https://github.com/ba0f3/auditsh
+    license: see repository
+    mtime: "{{ .CommitDate }}"
+    # The package installs files + the botaudit account only; the sshd drop-in ships DISABLED in
+    # /usr/share/auditsh and is enabled by `auditsh-setup --local --key ...`.
+    contents:
+      - src: install.sh
+        dst: /usr/sbin/auditsh-setup
+        file_info: {mode: 0755, owner: root, group: root, mtime: "{{ .CommitDate }}"}
+      - src: stage/deb/allowlist.yaml
+        dst: /etc/auditsh/allowlist.yaml
+        type: config|noreplace
+        packager: deb
+        file_info: {mode: 0644, owner: root, group: root, mtime: "{{ .CommitDate }}"}
+      - src: stage/rpm/allowlist.yaml
+        dst: /etc/auditsh/allowlist.yaml
+        type: config|noreplace
+        packager: rpm
+        file_info: {mode: 0644, owner: root, group: root, mtime: "{{ .CommitDate }}"}
+      # sudoers is security policy owned by the package (not a conffile): replaced on upgrade, removed on remove.
+      - src: deploy/sudoers.botaudit
+        dst: /etc/sudoers.d/botaudit
+        packager: deb
+        file_info: {mode: 0440, owner: root, group: root, mtime: "{{ .CommitDate }}"}
+      - src: stage/rpm/sudoers.botaudit
+        dst: /etc/sudoers.d/botaudit
+        packager: rpm
+        file_info: {mode: 0440, owner: root, group: root, mtime: "{{ .CommitDate }}"}
+      - src: deploy/auditsh-jvm
+        dst: /usr/local/sbin/auditsh-jvm
+        file_info: {mode: 0755, owner: root, group: root, mtime: "{{ .CommitDate }}"}
+      - src: deploy/sshd_config.d/50-botaudit.conf
+        dst: /usr/share/auditsh/50-botaudit.conf
+        file_info: {mode: 0644, owner: root, group: root, mtime: "{{ .CommitDate }}"}
+      # rpm does not own implicit parent dirs; own them so rpm -e leaves no empty dirs (dpkg tracks them itself).
+      - dst: /etc/auditsh
+        type: dir
+        packager: rpm
+        file_info: {mode: 0755, owner: root, group: root, mtime: "{{ .CommitDate }}"}
+      - dst: /usr/share/auditsh
+        type: dir
+        packager: rpm
+        file_info: {mode: 0755, owner: root, group: root, mtime: "{{ .CommitDate }}"}
+    scripts:
+      preinstall: packaging/preinstall.sh
+      postinstall: packaging/postinstall.sh
+      preremove: packaging/preremove.sh
+      postremove: packaging/postremove.sh
+    overrides:
+      deb:
+        dependencies: [openssh-server, sudo, passwd]
+      rpm:
+        dependencies: [openssh-server, sudo, shadow-utils]
+
+release:
+  github: {owner: ba0f3, name: auditsh}
+  draft: false
+  extra_files: *extra

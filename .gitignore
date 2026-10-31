@@ -1,3 +1,6 @@
 auditsh
 dist/
 .t*/
+stage/
+.bin/
+release/

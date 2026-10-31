@@ -135,10 +135,13 @@ It then prints the `vcs.revision`/`vcs.modified` values from `go version -m` and
 Two builds of the same commit give identical hashes.
 
 ## Quick install (release binary, as root)
-Releases (`v*` tags) are built by `.github/workflows/release.yml`: a read-only `build` job runs `build.sh` twice per arch
-(linux/amd64, linux/arm64; go1.27.3 from a sha256-pinned tarball, `-trimpath`, CGO off) and compares the results. A separate `attest`
-job adds GitHub build provenance, and a `publish` job (the only one with `contents: write`) creates the release with
-`auditsh-linux-<arch>`, `auditsh-jvm`, `allowlist.yaml`, `50-botaudit.conf`, `sudoers.botaudit`, `install.sh` and `SHA256SUMS`.
+Releases are built by GoReleaser from `.goreleaser.yaml`, the single build and packaging definition
+(linux/amd64 + linux/arm64; go1.27.3, `CGO_ENABLED=0 -trimpath -buildvcs=true`, no ldflags, timestamps = commit time). The binaries are
+byte-identical to `build.sh` output for the same commit, and a rebuild of a tag reproduces its `SHA256SUMS` exactly. Each release has
+`auditsh-linux-<arch>`, the deb/rpm packages, `auditsh-jvm`, `allowlist.yaml`, `50-botaudit.conf`, `sudoers.botaudit`, `install.sh` and `SHA256SUMS`.
+On a `v*` tag push, `.github/workflows/release.yml` runs GoReleaser twice in a read-only `build` job (no publish) and compares the results
+and the binaries with `build.sh`. A separate `attest` job adds GitHub build provenance, and a `publish` job (the only one with
+`contents: write`) creates the release. See [Releasing](#releasing) for the local flow.
 **Maintainers:** protect tags with a repository ruleset on `refs/tags/v*` (restrict creation to maintainers, block update and deletion).
 
 `install.sh` never installs "latest". It requires `--version` plus at least one trust anchor that does not come from the release itself:
@@ -171,8 +174,9 @@ curl --proto '=https' --tlsv1.2 -fsSL https://github.com/ba0f3/auditsh/releases/
 Releases also carry `auditsh_<ver>-1_{amd64,arm64}.deb` and `auditsh-<ver>-1.{x86_64,aarch64}.rpm`, listed in
 `SHA256SUMS` and covered by the build attestation. Verify them the same way as the binary
 (`sha256sum -c --ignore-missing SHA256SUMS` after checking the SHA256SUMS hash, or `gh attestation verify`).
-Build them locally with `./pkg.sh [rev]`: reproducible binaries from `build.sh`, nfpm pinned with a
-sha256-checked tarball, `SOURCE_DATE_EPOCH` = commit time, so a rebuild is byte-identical.
+Build them locally with `make snapshot` (see [Releasing](#releasing)). Packaging is defined in the `nfpms` section of
+`.goreleaser.yaml`. `packaging/stage.sh` (a GoReleaser before-hook) writes the deb/rpm variants of the allowlist and the rpm sudoers to
+`stage/` and checks them with `visudo -cf`. Every timestamp is the commit time, so a rebuild is byte-identical.
 
 Installing the package does **not** open SSH access. It installs:
 
@@ -305,3 +309,21 @@ On a paused VM the fuzzer may report "fuzzing process hung"; replay the reported
   to run each command in a transient cgroup (`systemd-run --scope -p RuntimeMaxSec=20`); it isn't done
   now because it adds a systemd dependency and privileges. On revocation, `pkill -u botaudit`.
 - Kernel or sshd bugs are out of scope.
+
+## Releasing
+
+`make help` lists the targets: `build`, `test` (vet + race), `lint` (gofmt, shellcheck, actionlint, action SHA pins, visudo,
+`goreleaser check`), `fuzz` (all 5 targets, `FUZZTIME=30s` by default), `fuzz-long` (`FUZZLONGTIME=30m`), `vuln` (govulncheck v1.9.0),
+`snapshot`/`pkg`, `release` and `clean`. GoReleaser is pinned (v2.19.0) and sha256-verified by `.github/scripts/goreleaser.sh`, which
+caches it in `.bin/`. Bump the version only together with both tarball hashes from the release's `checksums.txt`.
+
+Local release (go1.27.3, `visudo`, `curl` and a `GITHUB_TOKEN` with `contents: write` on this repo):
+```sh
+make check fuzz            # test + lint + vuln, then a 30s fuzz smoke per target
+make snapshot              # optional dry run: dist/ and release/ (flat assets + SHA256SUMS)
+git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z
+GITHUB_TOKEN=... make release   # needs a clean tree with HEAD tagged v*; builds, publishes, then prints the hashes
+```
+`make release` ends with `AUDITSH_SHA256 (sha256 of SHA256SUMS): <hash>`. Publish that hash out of band (for example a signed
+announcement): it is the trust anchor for `install.sh --sha256`. Anyone can check it by running `make snapshot` on the tag; the
+`SHA256SUMS` comes out the same. If the tag push also starts `release.yml`, only one of the two can create the release. Use one path per tag.
