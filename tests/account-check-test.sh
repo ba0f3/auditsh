@@ -11,7 +11,8 @@ D=$(mktemp -d); trap 'rm -rf "$D"' EXIT
 mkdir "$D/bin"
 cat > "$D/bin/getent" <<'EOF'
 #!/bin/sh
-f=$FX/$1; [ -n "${2:-}" ] || { cat "$f"; exit 0; }
+# Enumeration may differ from keyed lookups (sssd/LDAP enumerate=false): $FX/<db>.enum overrides it.
+f=$FX/$1; [ -n "${2:-}" ] || { if [ -f "$f.enum" ]; then cat "$f.enum"; else cat "$f"; fi; exit 0; }
 awk -F: -v k="$2" '$1==k || $3==k {print; found=1; exit} END{exit !found}' "$f" || exit 2
 EOF
 cat > "$D/bin/id" <<'EOF'
@@ -32,10 +33,12 @@ base_g='root:x:0:
 docker:x:990:
 squat:x:500:'
 fails=0
-# case NAME EXPECT(ok|fail) PASSWD_EXTRA GROUP_EXTRA [PIN]
+# case NAME EXPECT(ok|fail) PASSWD_EXTRA GROUP_EXTRA [PIN] [KEYED_ONLY_PASSWD] [KEYED_ONLY_GROUP]
 case_() {
   name=$1 want=$2; FX=$D/$name; export FX; mkdir -p "$FX"
   printf '%s\n%s' "$base_p" "$3" | sed '/^$/d' > "$FX/passwd"; printf '%s\n%s' "$base_g" "$4" | sed '/^$/d' > "$FX/group"
+  if [ -n "${6:-}" ]; then cp "$FX/passwd" "$FX/passwd.enum"; printf '%s\n' "$6" | cat - "$FX/passwd.enum" > "$FX/passwd"; fi
+  if [ -n "${7:-}" ]; then cp "$FX/group" "$FX/group.enum"; printf '%s\n' "$7" | cat - "$FX/group.enum" > "$FX/group"; fi
   if PATH="$D/bin:$PATH" sh packaging/preinstall.sh install 2>"$FX/err.p"; then p=ok; else p=fail; fi
   if PATH="$D/bin:$PATH" sh "$D/install.sh" --check-account ${5:+--uid "$5"} 2>"$FX/err.i"; then i=ok; else i=fail; fi
   [ -n "${5:-}" ] && p=$want  # preinst has no --uid
@@ -59,6 +62,9 @@ case_ supplementary fail 'botaudit:x:985:985::/:/x' 'botaudit:x:985:
 docker2:x:986:botaudit'
 case_ pin-match ok 'botaudit:x:985:985::/:/x' 'botaudit:x:985:' 985
 case_ pin-uid-mismatch fail 'botaudit:x:985:985::/:/x' 'botaudit:x:985:' 984
+case_ pin-uid-mismatch-only fail 'botaudit:x:985:984::/:/x' 'botaudit:x:984:' 984
+case_ keyed-uid-alias fail 'botaudit:x:985:985::/:/x' 'botaudit:x:985:' '' 'remote:x:985:500::/:/x'
+case_ keyed-gid-alias fail 'botaudit:x:985:985::/:/x' 'botaudit:x:985:' '' '' 'rgroup:x:985:'
 case_ pin-group-mismatch fail '' 'botaudit:x:985:' 984
 [ "$fails" = 0 ] || { echo "$fails account-check case(s) failed" >&2; exit 1; }
 echo "account-check: preinst and install.sh agree on all cases"

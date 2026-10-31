@@ -40,6 +40,18 @@ $DEL >/dev/null; echo "remove rc=$?"; $PURGE >/dev/null 2>&1
 userdel squat990; groupdel docker990
 snap > /tmp/q3; diff /tmp/s0 /tmp/q3 && echo "back to pre-test snapshot"
 
+t "N-1: postinst re-check fails on the account it just created -> sudoers removed, account removed, rc!=0"
+# A stale member line makes the NEW botaudit a supplementary member: preinst (no botaudit yet) passes,
+# the post-create re-check in auditsh-setup --account-only must fail closed.
+groupadd staleg; sed -i 's/^\(staleg:[^:]*:[0-9]*:\)$/\1botaudit/' /etc/group; grep '^staleg:' /etc/group
+$ADD; echo "rc=$?"
+ls /etc/sudoers.d/botaudit /etc/sudoers.d/botaudit-jvm 2>&1 | sed 's/^/sudoers: /'
+getent passwd botaudit || echo "no botaudit user"; getent group botaudit || echo "no botaudit group"
+if command -v dpkg >/dev/null 2>&1; then dpkg-query -W -f='status: ${db:Status-Abbrev}\n' auditsh 2>&1; else rpm -q auditsh; fi
+$DEL >/dev/null 2>&1; $PURGE >/dev/null 2>&1; echo "cleanup rc=$?"
+groupdel staleg; userdel botaudit 2>/dev/null; groupdel botaudit 2>/dev/null
+snap > /tmp/q5; diff /tmp/s0 /tmp/q5 && echo "back to pre-test snapshot"
+
 t "pre-existing sane botaudit keeps its ids"
 groupadd --system -g 985 botaudit; useradd --system -M -u 985 -g botaudit botaudit
 $ADD; echo "rc=$?"; getent passwd botaudit | cut -d: -f1,3,4

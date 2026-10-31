@@ -190,7 +190,14 @@ check_uid_free() {
   fi
 }
 
-acfail() { die "$*"; }
+# After this run created the account, a failed check must not leave live grants or the account behind.
+acfail() { if [ "${AC_POST:-0}" = 1 ]; then post_create_fail "$*"; fi; die "$*"; }
+post_create_fail() {
+  rm -f "$SUDOERS" "$SUDOERS_JVM"
+  if [ "${CREATED_USER:-0}" = 1 ]; then userdel "$USER_NAME" 2>/dev/null || true; CREATED_USER=0; fi
+  if [ "${CREATED_GROUP:-0}" = 1 ]; then groupdel "$USER_NAME" 2>/dev/null || true; CREATED_GROUP=0; fi
+  die "$1; account created by this run removed, removed $SUDOERS $SUDOERS_JVM"
+}
 # BEGIN account-check (byte-identical in install.sh and packaging/preinstall.sh; tests/account-check-test.sh)
 # account_check NAME [PIN]: an existing NAME account/group must be safe to grant; calls acfail MSG otherwise.
 ac_defs() {
@@ -208,6 +215,7 @@ account_check() {
     case "$ac_gg" in ''|*[!0-9]*|0) acfail "group $ac_n has gid '$ac_gg' (0 or invalid)" ;; esac
     if [ "$ac_gg" -lt "$ac_glo" ] || [ "$ac_gg" -gt "$ac_ghi" ]; then acfail "group $ac_n gid $ac_gg outside system range $ac_glo..$ac_ghi"; fi
     [ "$(getent group | awk -F: -v g="$ac_gg" '$3==g' | wc -l)" -eq 1 ] || acfail "gid $ac_gg of group $ac_n is shared with another group"
+    [ "$(getent group "$ac_gg" | cut -d: -f1)" = "$ac_n" ] || acfail "gid $ac_gg does not resolve back to group $ac_n"
     if [ -n "$ac_pin" ] && [ "$ac_gg" != "$ac_pin" ]; then acfail "group $ac_n exists with gid $ac_gg, not --uid $ac_pin"; fi
   fi
   if ac_e=$(getent passwd "$ac_n"); then
@@ -216,6 +224,7 @@ account_check() {
     case "$ac_ug" in ''|*[!0-9]*|0) acfail "user $ac_n has primary gid '$ac_ug' (0 or invalid)" ;; esac
     if [ "$ac_uu" -lt "$ac_ulo" ] || [ "$ac_uu" -gt "$ac_uhi" ]; then acfail "user $ac_n uid $ac_uu outside system range $ac_ulo..$ac_uhi"; fi
     [ "$(getent passwd | awk -F: -v u="$ac_uu" '$3==u' | wc -l)" -eq 1 ] || acfail "uid $ac_uu of user $ac_n is shared with another account"
+    [ "$(getent passwd "$ac_uu" | cut -d: -f1)" = "$ac_n" ] || acfail "uid $ac_uu does not resolve back to user $ac_n"
     if [ -z "$ac_gg" ] || [ "$ac_ug" != "$ac_gg" ]; then acfail "user $ac_n primary gid $ac_ug is not group $ac_n"; fi
     [ "$(id -G "$ac_n" 2>/dev/null)" = "$ac_gg" ] || acfail "user $ac_n has supplementary groups ($(id -Gn "$ac_n" 2>/dev/null))"
     if [ -n "$ac_pin" ] && [ "$ac_uu" != "$ac_pin" ]; then acfail "user $ac_n exists with uid $ac_uu, not --uid $ac_pin"; fi
@@ -228,7 +237,7 @@ check_account_sane() {
   # A Java user must never alias botaudit (sudo/kernel would treat them as one identity).
   if [ -n "$JAVA_USERS" ] && ac_bu=$(id -u "$USER_NAME" 2>/dev/null); then
     for ac_j in $(printf '%s' "$JAVA_USERS" | tr , ' '); do
-      [ "$(id -u "$ac_j")" != "$ac_bu" ] || die "--java-user: $ac_j shares uid $ac_bu with $USER_NAME"
+      [ "$(id -u "$ac_j")" != "$ac_bu" ] || acfail "--java-user: $ac_j shares uid $ac_bu with $USER_NAME"
     done
   fi
 }
@@ -243,17 +252,18 @@ setup_account() {
     usermod --shell "$BIN" --home "$HOME_DIR" "$USER_NAME"
   else
     if [ -n "$FIXED_UID" ]; then
-      getent group "$USER_NAME" >/dev/null || groupadd --system --gid "$FIXED_UID" "$USER_NAME"
+      getent group "$USER_NAME" >/dev/null || { groupadd --system --gid "$FIXED_UID" "$USER_NAME" && CREATED_GROUP=1; }
       set -- --uid "$FIXED_UID"
     else
-      getent group "$USER_NAME" >/dev/null || groupadd --system "$USER_NAME"
+      getent group "$USER_NAME" >/dev/null || { groupadd --system "$USER_NAME" && CREATED_GROUP=1; }
       set --
     fi
     useradd --system "$@" --gid "$USER_NAME" --no-create-home --home-dir "$HOME_DIR" --shell "$BIN" "$USER_NAME"
     CREATED_USER=1
   fi
   # Re-check what the system actually assigned (unique uid/gid, system range, no supplementary groups).
-  check_account_sane
+  # On failure post_create_fail removes sudoers and the user/group this run created, then exits non-zero.
+  AC_POST=1; check_account_sane; AC_POST=0
   pam=yes
   if command -v sshd >/dev/null 2>&1; then
     pam=$(sshd -T -C "user=$USER_NAME,host=x,addr=192.0.2.10" 2>/dev/null | awk '$1=="usepam"{print $2}')

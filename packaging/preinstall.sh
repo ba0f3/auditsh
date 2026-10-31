@@ -23,6 +23,7 @@ account_check() {
     case "$ac_gg" in ''|*[!0-9]*|0) acfail "group $ac_n has gid '$ac_gg' (0 or invalid)" ;; esac
     if [ "$ac_gg" -lt "$ac_glo" ] || [ "$ac_gg" -gt "$ac_ghi" ]; then acfail "group $ac_n gid $ac_gg outside system range $ac_glo..$ac_ghi"; fi
     [ "$(getent group | awk -F: -v g="$ac_gg" '$3==g' | wc -l)" -eq 1 ] || acfail "gid $ac_gg of group $ac_n is shared with another group"
+    [ "$(getent group "$ac_gg" | cut -d: -f1)" = "$ac_n" ] || acfail "gid $ac_gg does not resolve back to group $ac_n"
     if [ -n "$ac_pin" ] && [ "$ac_gg" != "$ac_pin" ]; then acfail "group $ac_n exists with gid $ac_gg, not --uid $ac_pin"; fi
   fi
   if ac_e=$(getent passwd "$ac_n"); then
@@ -31,6 +32,7 @@ account_check() {
     case "$ac_ug" in ''|*[!0-9]*|0) acfail "user $ac_n has primary gid '$ac_ug' (0 or invalid)" ;; esac
     if [ "$ac_uu" -lt "$ac_ulo" ] || [ "$ac_uu" -gt "$ac_uhi" ]; then acfail "user $ac_n uid $ac_uu outside system range $ac_ulo..$ac_uhi"; fi
     [ "$(getent passwd | awk -F: -v u="$ac_uu" '$3==u' | wc -l)" -eq 1 ] || acfail "uid $ac_uu of user $ac_n is shared with another account"
+    [ "$(getent passwd "$ac_uu" | cut -d: -f1)" = "$ac_n" ] || acfail "uid $ac_uu does not resolve back to user $ac_n"
     if [ -z "$ac_gg" ] || [ "$ac_ug" != "$ac_gg" ]; then acfail "user $ac_n primary gid $ac_ug is not group $ac_n"; fi
     [ "$(id -G "$ac_n" 2>/dev/null)" = "$ac_gg" ] || acfail "user $ac_n has supplementary groups ($(id -Gn "$ac_n" 2>/dev/null))"
     if [ -n "$ac_pin" ] && [ "$ac_uu" != "$ac_pin" ]; then acfail "user $ac_n exists with uid $ac_uu, not --uid $ac_pin"; fi
