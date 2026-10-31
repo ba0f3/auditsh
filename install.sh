@@ -181,6 +181,8 @@ tracked() {
 backup() {
   BAK=$TMP/bak; mkdir -p "$BAK"; : > "$TMP/absent"; CREATED_USER=0
   HOME_EXISTED=0; if [ -e "$HOME_DIR" ]; then HOME_EXISTED=1; fi
+  : > "$TMP/newdirs"
+  for d in /usr/local/sbin "$CONF_DIR" "$KEYS_DIR"; do [ -d "$d" ] || echo "$d" >> "$TMP/newdirs"; done
   tracked | while IFS= read -r f; do
     if [ -f "$f" ]; then mkdir -p "$BAK$(dirname "$f")"; cp -p "$f" "$BAK$f"; else echo "$f" >> "$TMP/absent"; fi
   done
@@ -194,6 +196,7 @@ rollback() {
     userdel "$USER_NAME" 2>/dev/null || true; groupdel "$USER_NAME" 2>/dev/null || true
     if [ "$HOME_EXISTED" = 0 ]; then rm -rf -- "$HOME_DIR"; fi
   fi
+  while IFS= read -r d; do rmdir -- "$d" 2>/dev/null || true; done < "$TMP/newdirs"
   say "rolled back (sshd not reloaded)"
 }
 

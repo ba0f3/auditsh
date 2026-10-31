@@ -31,7 +31,7 @@ snap > /tmp/s1; cmp -s /tmp/s0 /tmp/s1 && echo "SNAPSHOT UNCHANGED after all fai
 t "rollback (L-2): broken drop-in in release"; cp $REL/50-botaudit.conf /tmp/good; echo 'BogusDirective yes' >> $REL/50-botaudit.conf
 (cd $REL && rm SHA256SUMS && sha256sum -- * > SHA256SUMS); S2=$(sha256sum $REL/SHA256SUMS | cut -d' ' -f1)
 sh /src/install.sh --version v9.9.9 --sha256 "$S2" --key-file /root/tk.pub 2>&1 | tail -n3
-snap > /tmp/s2; cmp -s /tmp/s0 /tmp/s2 && echo "SNAPSHOT UNCHANGED after rollback (binary/sudoers/user/shells/AcceptEnv)"; id botaudit 2>&1
+snap > /tmp/s2; cmp -s /tmp/s0 /tmp/s2 && echo "SNAPSHOT UNCHANGED after rollback (binary/sudoers/user/shells/AcceptEnv)"; id botaudit 2>&1; ls -d /etc/auditsh /etc/ssh/authorized_keys 2>&1
 cp /tmp/good $REL/50-botaudit.conf; (cd $REL && rm SHA256SUMS && sha256sum -- * > SHA256SUMS); SUMS=$(sha256sum $REL/SHA256SUMS | cut -d" " -f1); I="sh /src/install.sh --version v9.9.9 --sha256 $SUMS"
 t "install"; $I --key-file /root/tk.pub --from 127.0.0.1 2>&1 | tail -n1
 getent passwd botaudit; grep '^botaudit:' /etc/shadow | cut -d: -f2; getent group botaudit
