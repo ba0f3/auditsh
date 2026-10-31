@@ -73,11 +73,13 @@ while [ $# -gt 0 ]; do
     --uninstall) MODE=uninstall; shift ;;
     --dry-run) DRY=1; shift ;;
     --test-hooks) TEST_HOOKS=1; shift ;;  # test-only, undocumented: enables AUDITSH_TEST_FAIL_AFTER
+    --check-account) MODE=check; shift ;;  # test-only, undocumented: run the account checks and exit
     -h|--help) sed -n '2,30p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
 
+if [ "$MODE" = check ]; then check_account_sane; exit 0; fi  # test-only, read-only
 [ "$(uname -s)" = Linux ] || die "Linux only"
 if [ "$(id -u)" != 0 ]; then
   if [ "$DRY" = 1 ]; then warn "not root: dry-run only"; else die "must run as root"; fi
@@ -188,24 +190,46 @@ check_uid_free() {
   fi
 }
 
-# An existing botaudit keeps its ids but must not be uid/gid 0, must have a system uid
-# (SYS_UID_MIN..SYS_UID_MAX, fallback 100..999) and primary group botaudit. Same rules as packaging/preinstall.sh.
-check_account_sane() {
-  lo=$(awk '$1=="SYS_UID_MIN"{print $2}' /etc/login.defs 2>/dev/null) || true
-  hi=$(awk '$1=="SYS_UID_MAX"{print $2}' /etc/login.defs 2>/dev/null) || true
-  case "$lo" in ''|*[!0-9]*) lo=100 ;; esac
-  case "$hi" in ''|*[!0-9]*) hi=999 ;; esac
-  gg=""
-  if bg=$(getent group "$USER_NAME"); then
-    gg=$(printf '%s' "$bg" | cut -d: -f3)
-    case "$gg" in ''|*[!0-9]*|0) die "group $USER_NAME has gid '$gg' (0 or invalid)" ;; esac
+acfail() { die "$*"; }
+# BEGIN account-check (byte-identical in install.sh and packaging/preinstall.sh; tests/account-check-test.sh)
+# account_check NAME [PIN]: an existing NAME account/group must be safe to grant; calls acfail MSG otherwise.
+ac_defs() {
+  ac_v=$(awk -v k="$1" '$1==k{v=$2} END{print v}' /etc/login.defs 2>/dev/null) || ac_v=
+  case "$ac_v" in ''|*[!0-9]*) ac_v=$2 ;; esac
+  printf '%s' "$ac_v"
+}
+account_check() {
+  ac_n=$1; ac_pin=${2:-}
+  ac_ulo=$(ac_defs SYS_UID_MIN 100); ac_uhi=$(ac_defs SYS_UID_MAX 999)
+  ac_glo=$(ac_defs SYS_GID_MIN 100); ac_ghi=$(ac_defs SYS_GID_MAX 999)
+  ac_gg=""
+  if ac_e=$(getent group "$ac_n"); then
+    ac_gg=$(printf '%s' "$ac_e" | cut -d: -f3)
+    case "$ac_gg" in ''|*[!0-9]*|0) acfail "group $ac_n has gid '$ac_gg' (0 or invalid)" ;; esac
+    if [ "$ac_gg" -lt "$ac_glo" ] || [ "$ac_gg" -gt "$ac_ghi" ]; then acfail "group $ac_n gid $ac_gg outside system range $ac_glo..$ac_ghi"; fi
+    [ "$(getent group | awk -F: -v g="$ac_gg" '$3==g' | wc -l)" -eq 1 ] || acfail "gid $ac_gg of group $ac_n is shared with another group"
+    if [ -n "$ac_pin" ] && [ "$ac_gg" != "$ac_pin" ]; then acfail "group $ac_n exists with gid $ac_gg, not --uid $ac_pin"; fi
   fi
-  if bu=$(getent passwd "$USER_NAME"); then
-    uu=$(printf '%s' "$bu" | cut -d: -f3); ug=$(printf '%s' "$bu" | cut -d: -f4)
-    case "$uu" in ''|*[!0-9]*|0) die "user $USER_NAME has uid '$uu' (0 or invalid)" ;; esac
-    case "$ug" in ''|*[!0-9]*|0) die "user $USER_NAME has primary gid '$ug' (0 or invalid)" ;; esac
-    if [ "$uu" -lt "$lo" ] || [ "$uu" -gt "$hi" ]; then die "user $USER_NAME uid $uu outside system range $lo..$hi"; fi
-    if [ -z "$gg" ] || [ "$ug" != "$gg" ]; then die "user $USER_NAME primary gid $ug is not group $USER_NAME"; fi
+  if ac_e=$(getent passwd "$ac_n"); then
+    ac_uu=$(printf '%s' "$ac_e" | cut -d: -f3); ac_ug=$(printf '%s' "$ac_e" | cut -d: -f4)
+    case "$ac_uu" in ''|*[!0-9]*|0) acfail "user $ac_n has uid '$ac_uu' (0 or invalid)" ;; esac
+    case "$ac_ug" in ''|*[!0-9]*|0) acfail "user $ac_n has primary gid '$ac_ug' (0 or invalid)" ;; esac
+    if [ "$ac_uu" -lt "$ac_ulo" ] || [ "$ac_uu" -gt "$ac_uhi" ]; then acfail "user $ac_n uid $ac_uu outside system range $ac_ulo..$ac_uhi"; fi
+    [ "$(getent passwd | awk -F: -v u="$ac_uu" '$3==u' | wc -l)" -eq 1 ] || acfail "uid $ac_uu of user $ac_n is shared with another account"
+    if [ -z "$ac_gg" ] || [ "$ac_ug" != "$ac_gg" ]; then acfail "user $ac_n primary gid $ac_ug is not group $ac_n"; fi
+    [ "$(id -G "$ac_n" 2>/dev/null)" = "$ac_gg" ] || acfail "user $ac_n has supplementary groups ($(id -Gn "$ac_n" 2>/dev/null))"
+    if [ -n "$ac_pin" ] && [ "$ac_uu" != "$ac_pin" ]; then acfail "user $ac_n exists with uid $ac_uu, not --uid $ac_pin"; fi
+  fi
+  return 0
+}
+# END account-check
+check_account_sane() {
+  account_check "$USER_NAME" "$FIXED_UID"
+  # A Java user must never alias botaudit (sudo/kernel would treat them as one identity).
+  if [ -n "$JAVA_USERS" ] && ac_bu=$(id -u "$USER_NAME" 2>/dev/null); then
+    for ac_j in $(printf '%s' "$JAVA_USERS" | tr , ' '); do
+      [ "$(id -u "$ac_j")" != "$ac_bu" ] || die "--java-user: $ac_j shares uid $ac_bu with $USER_NAME"
+    done
   fi
 }
 
@@ -228,6 +252,8 @@ setup_account() {
     useradd --system "$@" --gid "$USER_NAME" --no-create-home --home-dir "$HOME_DIR" --shell "$BIN" "$USER_NAME"
     CREATED_USER=1
   fi
+  # Re-check what the system actually assigned (unique uid/gid, system range, no supplementary groups).
+  check_account_sane
   pam=yes
   if command -v sshd >/dev/null 2>&1; then
     pam=$(sshd -T -C "user=$USER_NAME,host=x,addr=192.0.2.10" 2>/dev/null | awk '$1=="usepam"{print $2}')

@@ -11,7 +11,7 @@ FUZZTIME     ?= 30s
 FUZZLONGTIME ?= 30m
 FUZZPARALLEL ?= 2
 FUZZ_TARGETS := FuzzParseCommand FuzzAllowlistExec FuzzEnvSanitize FuzzLogEncoder FuzzProcRead
-SHELL_FILES  := install.sh build.sh packaging/*.sh tests/chroot-test.sh tests/pkg-test.sh deploy/auditsh-jvm .github/scripts/*.sh
+SHELL_FILES  := install.sh build.sh packaging/*.sh tests/chroot-test.sh tests/pkg-test.sh tests/account-check-test.sh deploy/auditsh-jvm .github/scripts/*.sh
 
 .DEFAULT_GOAL := help
 .PHONY: help build test lint fuzz fuzz-long vuln check snapshot pkg release verify-release clean
@@ -27,6 +27,7 @@ test: ## go vet + race tests (fetches and verifies modules first, so a clean che
 	go mod verify
 	go vet ./...
 	go test -race -count=1 ./...
+	sh tests/account-check-test.sh
 
 lint: ## gofmt, shellcheck, actionlint, action SHA pins, visudo, goreleaser check
 	@out=$$(gofmt -l .); [ -z "$$out" ] || { echo "gofmt needed: $$out"; exit 1; }

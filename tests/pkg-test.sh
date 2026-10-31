@@ -18,14 +18,18 @@ fi
 snap > /tmp/s0
 
 t "preinst refuses a bad pre-existing botaudit before unpacking (deb preinst / rpm %pre)"
-for case in "useradd -M -o -u 0 -g 0 botaudit" "useradd -M -U -u 1500 botaudit" "useradd -M -u 991 -g 0 botaudit" "useradd -M -u 992 -g users botaudit"; do
-  $case; snap > /tmp/q0
+for case in "useradd -M -o -u 0 -g 0 botaudit" "useradd -M -U -u 1500 botaudit" "useradd -M -u 991 -g 0 botaudit" "useradd -M -u 992 -g users botaudit" \
+  "groupadd -r -g 985 botaudit;useradd -M -r -u 985 -g botaudit botaudit;useradd -M -o -u 985 -g botaudit aliasu" \
+  "groupadd -r -g 985 botaudit;groupadd -o -g 985 aliasg;useradd -M -r -u 985 -g botaudit botaudit" \
+  "groupadd -r -g 985 botaudit;useradd -M -r -u 985 -g botaudit -G adm botaudit" \
+  "groupadd -g 1500 botaudit"; do
+  (IFS=';'; for c in $case; do (IFS=' '; $c); done); snap > /tmp/q0
   $ADD; echo "[$case] install rc=$?"
   left=""; for f in /usr/local/sbin/auditsh /etc/sudoers.d/botaudit /usr/sbin/auditsh-setup /etc/auditsh /usr/share/auditsh; do [ -e "$f" ] && left="$left $f"; done
   echo "leftover package paths:${left:- none}"
   if command -v dpkg >/dev/null 2>&1; then dpkg-query -W -f='status: ${db:Status-Abbrev}\n' auditsh 2>&1; else rpm -q auditsh; fi
   snap > /tmp/q1; diff /tmp/q0 /tmp/q1 && echo "unchanged"
-  userdel -f botaudit 2>/dev/null; groupdel botaudit 2>/dev/null
+  userdel -f aliasu 2>/dev/null; userdel -f botaudit 2>/dev/null; groupdel aliasg 2>/dev/null; groupdel botaudit 2>/dev/null
 done
 snap > /tmp/q2; diff /tmp/s0 /tmp/q2 && echo "back to pre-test snapshot"
 
