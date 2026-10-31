@@ -41,9 +41,53 @@ The `botaudit` account can run only the exact argv forms in `/etc/auditsh/allowl
 `top -b -n1`, `free [-m|-h]`, `df [-h]`, `uptime`, `cat /proc/meminfo|/proc/<pid>/status|/proc/<pid>/smaps_rollup`,
 `systemctl status <unit> --no-pager`, `journalctl -u <unit> --since <today|yesterday|N h ago|YYYY-MM-DD[ HH:MM[:SS]]> --no-pager [-n N]`,
 sudo: `ss -tlnp`, `ss -ulnp`, `dmesg -T [--level=err|err,warn|emerg,alert,crit,err,warn]`.
+JVM (as the JVM's user, needs `--java-user`): `jcmd`/`jstat` forms, see [Java/JVM diagnostics](#javajvm-diagnostics-opt-in-per-java-user).
 Not available: less, more, vi, find, tar, awk, sed, sh, bash, env, xargs, tee, python, git, or anything else on GTFOBins.
 **pmap was dropped.** It needs a PID under sudo, and fixed-argv sudoers can't express that (see design.md §4).
 Use `cat /proc/<pid>/smaps_rollup` instead.
+
+## Java/JVM diagnostics (opt-in per Java user)
+Forms (block `BEGIN Java/JVM diagnostics` in allowlist.yaml): `jcmd <pid> GC.heap_info|Thread.print|VM.flags|VM.uptime|VM.version`,
+`jcmd <pid> VM.native_memory summary` (needs `-XX:NativeMemoryTracking=summary` on the JVM), `jstat -gcutil <pid> [<100..1000 ms> <1..10>]`.
+`GC.class_histogram` is shipped **commented out**: it forces a full, stop-the-world GC (seconds on big heaps). Uncomment it to opt in.
+Never allowed, in the allowlist **and** in the helper's own table: `GC.heap_dump`, `JFR.*`, `VM.command_line` and
+`VM.system_properties` (often contain secrets), `VM.set_flag`, `ManagementAgent.*`, `Compiler.*`, `JVMTI.agent_load`, `System.*`, `help`, `-J...`.
+
+Enable: `auditsh-setup --local --java-user app [--java-user app2]` (or `install.sh ... --java-user app`). Each name must match
+`^[a-z_][a-z0-9_-]{0,31}$`, exist, and not be root/uid 0/botaudit. This writes `/etc/sudoers.d/botaudit-jvm` (0440, generated, not
+package-owned, removed on uninstall/package removal):
+```
+botaudit ALL=(app,app2) NOPASSWD: /usr/local/sbin/auditsh-jvm
+```
+Rerunning without `--java-user` keeps the existing file; to revoke, `rm /etc/sudoers.d/botaudit-jvm`.
+
+**Privilege design.** HotSpot attach (jcmd) and hsperfdata (jstat) work only as the JVM's own uid, and the pid is a variable.
+Rejected options:
+- `jcmd [0-9]* GC.heap_info` in sudoers: sudoers `*` matches spaces, so `jcmd 1 GC.heap_dump /x GC.heap_info` passes.
+- A root helper (`ALL=(root) auditsh-jvm *`): any helper bug becomes root.
+- Granting jcmd itself as the Java user: jcmd takes any diagnostic command.
+
+Chosen: sudo may only run one fixed program, `/usr/local/sbin/auditsh-jvm` (root:root 0755, ~60 lines of POSIX sh), and only **as a
+configured, non-root Java user**, never as root. Sudoers cannot constrain its args without a wildcard, so the helper is the argv gate:
+1. auditsh: the client argv matches a `jvm: true` rule (exactly one pid arg `[1-9][0-9]{0,9}`), then auditsh reads
+   `/proc/<pid>/status`, requires `Name: java` and one non-root uid (real=effective=saved=fs), maps it to a user name and
+   runs `/usr/bin/sudo -n -u <user> -- /usr/local/sbin/auditsh-jvm <jcmd|jstat> <args>` (same timeout, 1 MiB cap, clean env, audit log).
+2. sudo refuses users not listed by `--java-user`.
+3. The helper, as that user: refuses root; fixed table of forms (anything else exits 126); pid digits only; `/proc/<pid>/status`
+   uids all equal its own uid; `/proc/<pid>/exe` is `/…/bin/java` (a deleted/replaced binary is refused); that `java` and the
+   sibling `jcmd`/`jstat`, plus every parent dir, are root-owned, not symlinks, not group/world-writable; then
+   `exec env -i PATH=/usr/bin:/bin LC_ALL=C <jdk>/bin/<tool> <validated args>`. The tool comes from the target JVM's own JDK
+   (version-matched, never from PATH or the caller). A JRE without `jcmd`/`jstat`, or a JDK owned by the app user, is refused.
+
+Not `NOEXEC`: the helper has to exec jcmd. Worst case for a helper bug is code running as the Java user, not root.
+
+Caveats: jcmd's attach creates `.attach_pid<pid>` in the JVM's cwd or /tmp and sends SIGQUIT (that's why the exe must be java;
+a JVM started with `-XX:+DisableAttachMechanism` or `-Xrs` will not answer). jcmd/jstat also write their own
+`/tmp/hsperfdata_<user>/<pid>` while running. Thread dumps may show stack frames with app data in thread names. Pid reuse
+between the check and the attach is possible but the new process must also be a java process of the same user. With
+`hidepid=2`, botaudit cannot read other users' `/proc/<pid>/status`, so JVM rules are denied ("pid not visible") unless botaudit is in
+the hidepid `gid=` group. User lookup is `/etc/passwd` only (static binary), so LDAP/SSSD-only Java users are not supported. JVMs in
+containers (other pid/mount namespace) are out of scope.
 
 ## Reproducible build
 The toolchain is pinned to go1.27.3 (the `toolchain` line in go.mod). Run `make build` (`./build.sh [rev]`):
@@ -56,7 +100,7 @@ Two builds of the same commit give identical hashes.
 Releases (`v*` tags) are built by `.github/workflows/release.yml`: a read-only `build` job runs `build.sh` twice per arch
 (linux/amd64, linux/arm64; go1.27.3 from a sha256-pinned tarball, `-trimpath`, CGO off) and compares the results. A separate `attest`
 job adds GitHub build provenance, and a `publish` job (the only one with `contents: write`) creates the release with
-`auditsh-linux-<arch>`, `allowlist.yaml`, `50-botaudit.conf`, `sudoers.botaudit`, `install.sh` and `SHA256SUMS`.
+`auditsh-linux-<arch>`, `auditsh-jvm`, `allowlist.yaml`, `50-botaudit.conf`, `sudoers.botaudit`, `install.sh` and `SHA256SUMS`.
 **Maintainers:** protect tags with a repository ruleset on `refs/tags/v*` (restrict creation to maintainers, block update and deletion).
 
 `install.sh` never installs "latest". It requires `--version` plus at least one trust anchor that does not come from the release itself:
@@ -101,6 +145,7 @@ Installing the package does **not** open SSH access. It installs:
 | `/etc/sudoers.d/botaudit` | 0440, package-owned (replaced on upgrade, removed on remove) |
 | `/usr/share/auditsh/50-botaudit.conf` | sshd drop-in, shipped **disabled** |
 | `/usr/sbin/auditsh-setup` | this repo's `install.sh` |
+| `/usr/local/sbin/auditsh-jvm` | 0755 root, JVM helper (unused until `--java-user`) |
 
 The postinst runs `auditsh-setup --account-only`: user/group `botaudit` uid/gid 990, shell auditsh (added to
 `/etc/shells`), locked password, root-owned home, cron/at deny. Then `visudo -c`; if that fails, the sudoers

@@ -18,6 +18,7 @@ type rawRule struct {
 	Name string   `yaml:"name"`
 	Path string   `yaml:"path"`
 	Sudo bool     `yaml:"sudo"`
+	JVM  bool     `yaml:"jvm"`
 	Args []string `yaml:"args"`
 }
 
@@ -34,6 +35,7 @@ type rule struct {
 	Name string
 	Path string
 	Sudo bool
+	JVM  bool // run <Path> (the auditsh-jvm helper) via sudo as the target pid's owner
 	Args []argPattern
 	ID   string // e.g. "ps#1" for logs
 }
@@ -120,7 +122,10 @@ func parseConfig(b []byte) (*config, error) {
 		} else if !filepath.IsAbs(r.Path) || filepath.Clean(r.Path) != r.Path {
 			return nil, fmt.Errorf("rule %d: path must be absolute and clean: %q", i, r.Path)
 		}
-		nr := &rule{Name: r.Name, Path: r.Path, Sudo: r.Sudo}
+		if r.JVM && (r.Sudo || r.Path == internalProcRead || !jvmTools[r.Name]) {
+			return nil, fmt.Errorf("rule %d: jvm rule must be jcmd/jstat, not sudo/internal", i)
+		}
+		nr := &rule{Name: r.Name, Path: r.Path, Sudo: r.Sudo, JVM: r.JVM}
 		for _, p := range r.Args {
 			re, err := regexp.Compile(`^(?:` + p + `)$`)
 			if err != nil {
@@ -134,6 +139,17 @@ func parseConfig(b []byte) (*config, error) {
 				return nil, fmt.Errorf("rule %d: '--' not allowed", i)
 			}
 			nr.Args = append(nr.Args, ap)
+		}
+		if r.JVM {
+			npid := 0
+			for _, a := range nr.Args {
+				if a.literal == "" && a.re.String() == `^(?:`+jvmPidPattern+`)$` {
+					npid++
+				}
+			}
+			if npid != 1 {
+				return nil, fmt.Errorf("rule %d: jvm rule needs exactly one pid arg %q", i, jvmPidPattern)
+			}
 		}
 		if _, ok := c.Rules[r.Name]; !ok {
 			c.Order = append(c.Order, r.Name)

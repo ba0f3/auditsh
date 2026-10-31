@@ -1,0 +1,59 @@
+#!/bin/sh
+# auditsh-jvm: run ONE read-only jcmd/jstat diagnostic against a JVM, as that JVM's own user.
+# Installed root:root 0755 at /usr/local/sbin/auditsh-jvm. Invoked only by auditsh as
+#   sudo -n -u <java user> -- /usr/local/sbin/auditsh-jvm <jcmd|jstat> <args...>
+# The sudoers rule (/etc/sudoers.d/botaudit-jvm, from `auditsh-setup --java-user`) cannot pin a pid
+# without a wildcard, so THIS script is the policy gate: fixed table of forms, pid digits only,
+# pid owned by the invoking (non-root) uid, /proc/<pid>/exe a root-owned .../bin/java, and the
+# tool taken from that JDK's bin dir (version-matched, never from PATH or the caller).
+set -eu
+PATH=/usr/bin:/bin
+export PATH LC_ALL=C
+die() { printf 'auditsh-jvm: %s\n' "$*" >&2; exit 126; }
+num() { case $1 in ''|0*|*[!0-9]*) return 1 ;; esac; [ ${#1} -le 10 ]; }
+# safe FILE: FILE and every parent are root-owned, not symlinks, not group/world-writable.
+safe() {
+  p=$1
+  while :; do
+    [ ! -L "$p" ] || die "$p is a symlink"
+    [ "$(stat -c %u -- "$p")" = 0 ] || die "$p not root-owned"
+    case $(stat -c %A -- "$p") in ?????w????|????????w?) die "$p group/world-writable" ;; esac
+    [ "$p" != / ] || return 0
+    p=$(dirname -- "$p")
+  done
+}
+
+[ $# -ge 3 ] || die "usage: auditsh-jvm jcmd <pid> <cmd> | jstat -gcutil <pid> [interval count]"
+tool=$1; shift
+case $tool in
+  jcmd)
+    pid=$1
+    case "$#|$2|${3-}" in
+      "2|GC.heap_info|"|"2|Thread.print|"|"2|VM.flags|"|"2|VM.uptime|"|"2|VM.version|"|"2|GC.class_histogram|") ;;
+      "3|VM.native_memory|summary") ;;
+      *) die "jcmd form not allowed" ;;
+    esac ;;
+  jstat)
+    [ "$1" = -gcutil ] || die "jstat form not allowed"
+    pid=$2
+    case $# in
+      2) ;;
+      4) num "$3" && [ "$3" -ge 100 ] && [ "$3" -le 1000 ] || die "bad interval"
+         num "$4" && [ "$4" -le 10 ] || die "bad count" ;;
+      *) die "jstat form not allowed" ;;
+    esac ;;
+  *) die "tool not allowed" ;;
+esac
+num "$pid" || die "pid must be digits"
+
+me=$(id -u)
+[ "$me" != 0 ] || die "refusing to run as root"
+uids=$(awk '$1=="Uid:"{print $2, $3, $4, $5}' "/proc/$pid/status" 2>/dev/null) || die "no such pid"
+[ "$uids" = "$me $me $me $me" ] || die "pid $pid not owned by $(id -un)"
+exe=$(readlink "/proc/$pid/exe") || die "cannot read exe of pid $pid"
+case $exe in /*/bin/java) ;; *) die "pid $pid is not a java binary ($exe)" ;; esac
+bin=${exe%/java}
+safe "$exe"
+safe "$bin/$tool"
+[ -x "$bin/$tool" ] || die "$bin/$tool missing (JRE without JDK tools?)"
+exec /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C "$bin/$tool" "$@"

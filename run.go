@@ -70,6 +70,8 @@ type runOpts struct {
 	binOwnerUID uint32
 	checkBin    bool
 	sudo        string
+	procDir     string                           // default "/proc"
+	lookupUser  func(uid string) (string, error) // default lookupUserName
 }
 
 func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
@@ -101,7 +103,31 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 		}
 	}
 	name, argv := r.Path, args
-	if r.Sudo {
+	if r.JVM {
+		if o.checkBin {
+			if err := checkTree(o.sudo, o.binOwnerUID); err != nil {
+				return result{exit: 126}, fmt.Errorf("sudo check: %w", err)
+			}
+		}
+		procDir, lookup := o.procDir, o.lookupUser
+		if procDir == "" {
+			procDir = "/proc"
+		}
+		if lookup == nil {
+			lookup = lookupUserName
+		}
+		pid, err := jvmPid(args)
+		if err != nil {
+			return result{exit: 126}, err
+		}
+		owner, err := jvmOwner(procDir, pid, lookup)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "auditsh: "+err.Error())
+			return result{exit: 126}, err
+		}
+		name = o.sudo
+		argv = append([]string{"-n", "-u", owner, "--", r.Path, r.Name}, args...)
+	} else if r.Sudo {
 		name = o.sudo
 		argv = append([]string{"-n", "--", r.Path}, args...)
 	}

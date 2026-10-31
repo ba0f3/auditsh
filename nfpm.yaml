@@ -38,6 +38,9 @@ contents:
     dst: /etc/sudoers.d/botaudit
     packager: rpm
     file_info: {mode: 0440, owner: root, group: root}
+  - src: deploy/auditsh-jvm
+    dst: /usr/local/sbin/auditsh-jvm
+    file_info: {mode: 0755, owner: root, group: root}
   - src: deploy/sshd_config.d/50-botaudit.conf
     dst: /usr/share/auditsh/50-botaudit.conf
     file_info: {mode: 0644, owner: root, group: root}

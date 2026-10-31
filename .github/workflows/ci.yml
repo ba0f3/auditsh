@@ -38,6 +38,6 @@ jobs:
           export PATH="$PATH:/usr/sbin"
           command -v visudo >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q sudo; }
           ./pkg.sh "$GITHUB_SHA"
-      - run: shellcheck install.sh build.sh pkg.sh packaging/*.sh tests/chroot-test.sh tests/pkg-test.sh .github/scripts/check-action-pins.sh
+      - run: shellcheck install.sh build.sh pkg.sh packaging/*.sh tests/chroot-test.sh tests/pkg-test.sh deploy/auditsh-jvm .github/scripts/check-action-pins.sh
       - name: Verify action SHA pins match their tags
         run: .github/scripts/check-action-pins.sh

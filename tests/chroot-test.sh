@@ -5,7 +5,7 @@
 # Expects /src = repo checkout, /src/dist/auditsh = locally built binary, /src/sl = tiny /dev/log listener.
 set -u
 REL=/tmp/rel; mkdir -p $REL
-cp /src/dist/auditsh $REL/auditsh-linux-amd64; cp /src/allowlist.yaml /src/deploy/sudoers.botaudit /src/deploy/sshd_config.d/50-botaudit.conf $REL/
+cp /src/dist/auditsh $REL/auditsh-linux-amd64; cp /src/allowlist.yaml /src/deploy/auditsh-jvm /src/deploy/sudoers.botaudit /src/deploy/sshd_config.d/50-botaudit.conf $REL/
 (cd $REL && sha256sum -- * > SHA256SUMS); SUMS=$(sha256sum $REL/SHA256SUMS | cut -d' ' -f1)
 cat > /usr/bin/curl <<'SH'
 #!/bin/sh

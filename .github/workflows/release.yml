@@ -45,6 +45,7 @@ jobs:
           cp deploy/sshd_config.d/50-botaudit.conf release/50-botaudit.conf
           cp deploy/sudoers.botaudit release/sudoers.botaudit
           cp install.sh release/install.sh
+          cp deploy/auditsh-jvm release/auditsh-jvm
           ./pkg.sh "$GITHUB_SHA"   # deb + rpm, amd64 + arm64; nfpm pinned + sha256-verified inside
           cp dist/*.deb dist/*.rpm release/
           cd release && sha256sum -- * > SHA256SUMS && cat SHA256SUMS

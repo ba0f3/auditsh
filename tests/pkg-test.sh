@@ -48,14 +48,32 @@ auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null; echo "rc=$?"
 grep -c '^# auditsh-disabled: AcceptEnv' /etc/ssh/sshd_config
 cut -c1-60 /etc/ssh/authorized_keys/botaudit
 
+t "--java-user validation (each must fail, nothing written)"
+for u in root botaudit nosuchuser 'Bad;user' ''; do auditsh-setup --local --java-user "$u" >/dev/null 2>&1; echo "[$u] rc=$?"; done
+ls /etc/sudoers.d/botaudit-jvm 2>&1
+t "--java-user jvmapp (generated sudoers)"
+useradd -M -s /usr/sbin/nologin jvmapp
+auditsh-setup --local --java-user jvmapp --java-user jvmapp >/dev/null; echo "rc=$?"
+stat -c '%U:%G %a %n' /usr/local/sbin/auditsh-jvm /etc/sudoers.d/botaudit-jvm; grep -v '^#' /etc/sudoers.d/botaudit-jvm; visudo -c >/dev/null && echo visudo-ok
+sudo -l -U botaudit | grep -E 'auditsh-jvm|ss -tlnp' | sed 's/^ *//'
+
 t "e2e ssh"; /src/sl & sleep 0.3; /usr/sbin/sshd -o ListenAddress=127.0.0.1 -p 2222
 O="-i /root/tk -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=error"
 ssh $O botaudit@127.0.0.1 uptime; echo "rc=$?"; ssh $O botaudit@127.0.0.1 'ss -tlnp' | head -2; echo "ss rc=$?"; ssh $O botaudit@127.0.0.1 'sh -c id'; echo "rc=$?"; ssh $O -tt botaudit@127.0.0.1 </dev/null; echo "rc=$?"
+t "java: denied forms (rc=126 each, sudo/helper never reached for pid 1 = not java)"
+for c in 'jcmd 1 VM.uptime' 'jcmd 1 GC.heap_dump /tmp/x' 'jcmd abc GC.heap_info' 'jcmd 1 GC.heap_info extra' 'jcmd 1 VM.command_line' 'jstat -gcutil 1 1000 11'; do
+  # shellcheck disable=SC2029  # $c is meant to be sent verbatim
+  ssh $O botaudit@127.0.0.1 "$c" >/dev/null 2>&1; echo "[$c] rc=$?"; done
+t "java: botaudit cannot reach helper as root, only as jvmapp"
+su -s /bin/sh botaudit -c 'sudo -n -u root /usr/local/sbin/auditsh-jvm jcmd 1 VM.uptime' 2>&1 | tail -1
+su -s /bin/sh botaudit -c 'sudo -n -u jvmapp /usr/local/sbin/auditsh-jvm jcmd 1 GC.heap_dump /tmp/x' 2>&1 | tail -1
+su -s /bin/sh botaudit -c 'sudo -n -u jvmapp /usr/local/sbin/auditsh-jvm jcmd 1 VM.uptime' 2>&1 | tail -1
 pkill sshd; grep -o '"phase":"[a-z]*"\|"decision":"[a-z]*"\|"key_fp":"SHA256:[A-Za-z0-9]\{6\}' /tmp/syslog.txt | tr '\n' ' '; echo
 
 t "remove: $DEL"
 $DEL; echo "rc=$?"
-id botaudit 2>&1; ls /etc/ssh/sshd_config.d/50-botaudit.conf /etc/sudoers.d/botaudit /usr/local/sbin/auditsh 2>&1; ls /etc/auditsh
+id botaudit 2>&1; ls /etc/ssh/sshd_config.d/50-botaudit.conf /etc/sudoers.d/botaudit /etc/sudoers.d/botaudit-jvm /usr/local/sbin/auditsh /usr/local/sbin/auditsh-jvm 2>&1; ls /etc/auditsh
+userdel jvmapp
 grep -n AcceptEnv /etc/ssh/sshd_config; /usr/sbin/sshd -t && echo sshd-ok
 
 t "purge: $PURGE"
