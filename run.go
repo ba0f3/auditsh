@@ -15,6 +15,9 @@ import (
 const (
 	sudoPath  = "/usr/bin/sudo"
 	waitDelay = 2 * time.Second
+	// outputGrace: how long past the command timeout output may still be flushed before
+	// writes to a non-reading client are abandoned.
+	outputGrace = 1 * time.Second
 )
 
 var cleanEnv = []string{

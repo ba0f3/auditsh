@@ -103,6 +103,11 @@ func serve(e env) int {
 		le.Command = le.Command[:maxLogCmd] + "...[cut]"
 	}
 	le.Command = fmt.Sprintf("%+q", le.Command) // ASCII-only: escapes controls and all non-ASCII
+	// The overall deadline bounds the output path too: a client that stops reading cannot
+	// keep us (or the end record) waiting. outputGrace leaves time to flush after a timeout.
+	deadline := start.Add(e.opts.timeout + outputGrace)
+	e.stdout = newBoundedWriter(e.stdout, deadline)
+	e.stderr = newBoundedWriter(e.stderr, deadline)
 	finish := func(code int) int {
 		le.Exit = code
 		le.DurationMS = time.Since(start).Milliseconds()
@@ -257,7 +262,7 @@ func main() {
 	}
 	os.Exit(serve(env{
 		raw: raw, invErr: invErr, cfg: cfg, cfgErr: cfgErr,
-		stdout: os.Stdout, stderr: os.Stderr, logf: logf,
+		stdout: pollableStdio(1, "/dev/stdout", os.Stdout), stderr: pollableStdio(2, "/dev/stderr", os.Stderr), logf: logf,
 		user: u, client: clientIP(), sshConn: os.Getenv("SSH_CONNECTION"), keyFP: keyFP,
 		opts: runOpts{timeout: defaultTimeout, maxOutput: defaultMaxOut, checkBin: true, binOwnerUID: 0, sudo: sudoPath},
 	}))

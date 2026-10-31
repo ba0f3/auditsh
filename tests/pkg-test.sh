@@ -109,6 +109,23 @@ if [ -x /usr/sbin/iptables-legacy ] && command -v update-alternatives >/dev/null
 fi
 t "L-3: --local without --java-user revokes JVM access"
 auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null; echo "rc=$?"; for f in /etc/sudoers.d/botaudit-jvm /etc/auditsh/java-users; do [ -e "$f" ] && echo "STILL $f" || echo "gone $f"; done
+t "P2: failed --local on a PRE-EXISTING, modified botaudit rolls the account back exactly"
+mkdir -p /var/lib/ba-alt /home/botaudit/.ssh; : > /home/botaudit/.ssh/authorized_keys
+chown -R botaudit:botaudit /home/botaudit/.ssh; chmod 0700 /home/botaudit/.ssh; chmod 0600 /home/botaudit/.ssh/authorized_keys
+chown botaudit /home/botaudit; chmod 0750 /home/botaudit
+usermod -s /bin/sh -d /var/lib/ba-alt botaudit
+# shellcheck disable=SC2016  # literal fake hash
+usermod -p '$6$p2test$notarealhashbutanopaquevalue0123456789' botaudit   # unlocked, distinct from '!'/'*'
+acct() { getent passwd botaudit; getent shadow botaudit | sha256sum | cut -c1-16; stat -c '%u:%g %a %n' /home/botaudit /home/botaudit/.ssh /home/botaudit/.ssh/authorized_keys; }
+acct > /tmp/a0; snap > /tmp/p0
+AUDITSH_TEST_FAIL_AFTER=setup_account auditsh-setup --local --test-hooks --key "$(cat /root/tk.pub)" >/tmp/f 2>&1; echo "forced-failure rc=$?"; grep -E 'test hook|roll' /tmp/f
+acct > /tmp/a1; snap > /tmp/p1
+diff /tmp/a0 /tmp/a1 && echo "ACCOUNT RESTORED (shell, home, password field, home/.ssh/authorized_keys owner+mode)"
+diff /tmp/p0 /tmp/p1 && echo "files unchanged"
+AUDITSH_TEST_FAIL_AFTER=setup_account auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null 2>&1; echo "env without --test-hooks ignored rc=$?"
+getent passwd botaudit | cut -d: -f6,7; passwd -S botaudit | cut -d' ' -f2; stat -c '%U:%G %a %n' /home/botaudit /home/botaudit/.ssh
+rm -rf /home/botaudit/.ssh; rmdir /var/lib/ba-alt
+
 pkill sshd; grep -o '"phase":"[a-z]*"\|"decision":"[a-z]*"\|"key_fp":"SHA256:[A-Za-z0-9]\{6\}' /tmp/syslog.txt | tr '\n' ' '; echo
 
 t "remove: $DEL"

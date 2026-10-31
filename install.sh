@@ -50,6 +50,7 @@ FROM=${AUDITSH_FROM:-}
 REQ_ATTEST=${AUDITSH_REQUIRE_ATTESTATION:-0}
 FIXED_UID=${AUDITSH_UID:-990}
 DRY=0
+TEST_HOOKS=0
 MODE=install
 STAGED=0
 
@@ -71,6 +72,7 @@ while [ $# -gt 0 ]; do
     --package) PKG=1; shift ;;
     --uninstall) MODE=uninstall; shift ;;
     --dry-run) DRY=1; shift ;;
+    --test-hooks) TEST_HOOKS=1; shift ;;  # test-only, undocumented: enables AUDITSH_TEST_FAIL_AFTER
     -h|--help) sed -n '2,30p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
@@ -160,6 +162,7 @@ if [ "$MODE" != local ]; then
   install -o root -g root -m 0440 "$SRC/sudoers.botaudit" "$SUDOERS"
 fi
 setup_account
+test_fail_after setup_account
 # Regenerated from the flags on every install/--local run; no --java-user revokes JVM access.
 if [ -n "$JAVA_USERS" ]; then
   install -o root -g root -m 0440 "$TMP/sudoers.jvm" "$SUDOERS_JVM"
@@ -171,6 +174,7 @@ fi
 visudo -c >/dev/null || die "visudo -c failed after install"
 enable_ssh
 STAGED=0
+rm -f "$BAK/account.shadow"
 notes
 say "done"
 }
@@ -266,6 +270,7 @@ backup() {
   HOME_EXISTED=0; if [ -e "$HOME_DIR" ]; then HOME_EXISTED=1; fi
   : > "$TMP/newdirs"
   for d in /usr/local/sbin "$CONF_DIR" "$KEYS_DIR"; do [ -d "$d" ] || echo "$d" >> "$TMP/newdirs"; done
+  backup_account
   tracked | while IFS= read -r f; do
     if [ -f "$f" ]; then mkdir -p "$BAK$(dirname "$f")"; cp -p "$f" "$BAK$f"; else echo "$f" >> "$TMP/absent"; fi
   done
@@ -278,9 +283,45 @@ rollback() {
   if [ "${CREATED_USER:-0}" = 1 ]; then
     userdel "$USER_NAME" 2>/dev/null || true; groupdel "$USER_NAME" 2>/dev/null || true
     if [ "$HOME_EXISTED" = 0 ]; then rm -rf -- "$HOME_DIR"; fi
+  else
+    restore_account
   fi
   while IFS= read -r d; do rm -f -- "$d/.auditsh-created"; rmdir -- "$d" 2>/dev/null || true; done < "$TMP/newdirs"
   say "rolled back (sshd not reloaded)"
+}
+
+# Pre-existing account: setup_account rewrites shell, home, password field and home/.ssh ownership.
+# Save all of it so rollback can put it back exactly. The password field (a hash) goes only into a
+# root-only 0600 file under $BAK (inside the 0700 mktemp dir); it is never printed and is removed after use.
+backup_account() {
+  ACCT_EXISTED=0; : > "$BAK/account.perms"
+  if [ -e "$HOME_DIR" ]; then stat -c '%u:%g %a %n' -- "$HOME_DIR" >> "$BAK/account.perms"; fi
+  if [ -e "$HOME_DIR/.ssh" ]; then find "$HOME_DIR/.ssh" -exec stat -c '%u:%g %a %n' -- {} + >> "$BAK/account.perms"; fi
+  pw=$(getent passwd "$USER_NAME") || return 0
+  ACCT_EXISTED=1
+  ACCT_HOME=$(printf '%s' "$pw" | cut -d: -f6); ACCT_SHELL=$(printf '%s' "$pw" | cut -d: -f7)
+  (umask 077; getent shadow "$USER_NAME" | cut -d: -f2 > "$BAK/account.shadow") || die "cannot read shadow entry for $USER_NAME"
+  chmod 0600 "$BAK/account.shadow"
+}
+restore_account() {
+  [ "${ACCT_EXISTED:-0}" = 1 ] || return 0
+  usermod --shell "$ACCT_SHELL" --home "$ACCT_HOME" "$USER_NAME" || warn "could not restore shell/home of $USER_NAME"
+  if [ -f "$BAK/account.shadow" ]; then
+    # usermod -p takes the saved field verbatim (incl. '!' lock prefix); output discarded so nothing echoes it.
+    usermod -p "$(cat "$BAK/account.shadow")" "$USER_NAME" >/dev/null 2>&1 || warn "could not restore password field of $USER_NAME"
+    rm -f "$BAK/account.shadow"
+  fi
+  while IFS= read -r l; do
+    o=${l%% *}; r=${l#* }; m=${r%% *}; f=${r#* }
+    [ -e "$f" ] || continue
+    chown -h "$o" -- "$f" || warn "could not restore owner of $f"
+    [ -L "$f" ] || chmod "$m" -- "$f" || warn "could not restore mode of $f"
+  done < "$BAK/account.perms"
+  if [ "$HOME_EXISTED" = 0 ] && [ "$HOME_DIR" != "$ACCT_HOME" ]; then rmdir -- "$HOME_DIR" 2>/dev/null || true; fi
+}
+# Test-only fault injection: needs both --test-hooks and AUDITSH_TEST_FAIL_AFTER=<step>.
+test_fail_after() {
+  if [ "$TEST_HOOKS" = 1 ] && [ "${AUDITSH_TEST_FAIL_AFTER:-}" = "$1" ]; then die "test hook: forced failure after $1"; fi
 }
 
 parse_keys() {
