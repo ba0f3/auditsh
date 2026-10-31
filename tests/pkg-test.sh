@@ -128,6 +128,35 @@ for pw in '$6$p2test$notarealhashbutanopaquevalue0123456789' '!$6$p2test$lockedh
 done
 AUDITSH_TEST_FAIL_AFTER=setup_account auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null 2>&1; echo "env without --test-hooks ignored rc=$?"
 getent passwd botaudit | cut -d: -f6,7; passwd -S botaudit | cut -d' ' -f2; stat -c '%U:%G %a %n' /home/botaudit /home/botaudit/.ssh
+t "H-1/M-1: hostile pre-existing botaudit (odd names, symlinks out of HOME) cannot steer the rollback"
+H=/home/botaudit; S=$H/.ssh; ug="$(id -u botaudit):$(id -g botaudit)"
+mkdir -p /tmp/h1; printf 'sentinel\n' > /root/sentinel; printf 'victim\n' > /tmp/h1/victim; chmod 0600 /root/sentinel /tmp/h1/victim
+usermod -s /bin/sh -d /var/lib/ba-alt botaudit; chown botaudit:botaudit $H; chmod 0750 $H
+# names cannot hold '/': the forged line targets ./victim in the installer's cwd (the reviewer's PoC)
+for n in "a
+$ug 777 victim" "b
+$ug 4777 victim" "sp ace" "-rf x" "--" "-"; do : > "$S/$n"; : > "$H/$n"; done
+ln -s /root/sentinel "$S/lnk"; ln -s /etc "$S/etc"; ln -s /root/sentinel "$H/lnk"; ln -s /etc "$H/etc"
+chown -hR botaudit:botaudit $S; chmod 0700 $S; chmod 0600 $S/authorized_keys
+xsnap() { snap | grep -v " $H"; find /etc /root /tmp/h1 -xdev ! -path "$H*" -printf '%U:%G %m %p\n' 2>/dev/null | sort; }
+inner() { find $H -mindepth 1 ! -path $S ! -path $S/authorized_keys -printf '%U:%G %m %y %l\n' | sort | sha256sum; }
+acct > /tmp/a0; xsnap > /tmp/x0; inner > /tmp/i0
+(cd /tmp/h1 && AUDITSH_TEST_FAIL_AFTER=setup_account auditsh-setup --local --test-hooks --key "$(cat /root/tk.pub)" >/tmp/f 2>&1); rc=$?
+acct > /tmp/a1; xsnap > /tmp/x1; inner > /tmp/i1
+echo "forced-failure rc=$rc hook=$(grep -c 'test hook' /tmp/f) rolled-back=$(grep -c 'rolled back' /tmp/f)"
+if diff /tmp/a0 /tmp/a1 >/dev/null; then echo "fixed paths RESTORED"; else echo "fixed paths CHANGED"; diff /tmp/a0 /tmp/a1; fi
+if diff /tmp/x0 /tmp/x1 >/dev/null; then echo "OUTSIDE HOME UNCHANGED"; else echo "OUTSIDE HOME CHANGED"; diff /tmp/x0 /tmp/x1; fi
+diff /tmp/i0 /tmp/i1 >/dev/null && echo "other HOME entries untouched" || echo "other HOME entries CHANGED"
+stat -c '%u:%g %a sentinel' /root/sentinel; stat -c '%u:%g %a victim' /tmp/h1/victim
+t "symlinked authorized_keys is refused before any change"
+mv $S/authorized_keys $S/ak.real; ln -s /root/sentinel $S/authorized_keys; chown -h botaudit:botaudit $S/authorized_keys
+xsnap > /tmp/x0; getent passwd botaudit > /tmp/a0
+(cd /tmp/h1 && auditsh-setup --local --key "$(cat /root/tk.pub)" >/tmp/f 2>&1); rc=$?
+xsnap > /tmp/x1; getent passwd botaudit > /tmp/a1
+echo "rc=$rc refused=$(grep -c 'is a symlink; refusing' /tmp/f)"; diff /tmp/x0 /tmp/x1 >/dev/null && diff /tmp/a0 /tmp/a1 >/dev/null && echo "NOTHING CHANGED"
+rm -f $S/authorized_keys; mv $S/ak.real $S/authorized_keys
+auditsh-setup --local --key "$(cat /root/tk.pub)" >/dev/null 2>&1; echo "clean reinstall rc=$?"
+find $H -mindepth 1 -maxdepth 1 ! -name .ssh -exec rm -rf {} +; rm -rf /tmp/h1 /root/sentinel
 rm -rf /home/botaudit/.ssh; rmdir /var/lib/ba-alt
 
 pkill sshd; grep -o '"phase":"[a-z]*"\|"decision":"[a-z]*"\|"key_fp":"SHA256:[A-Za-z0-9]\{6\}' /tmp/syslog.txt | tr '\n' ' '; echo

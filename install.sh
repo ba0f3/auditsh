@@ -207,7 +207,11 @@ setup_account() {
     usermod -L "$USER_NAME"
   fi
   install -d -o root -g root -m 0755 "$HOME_DIR"
-  if [ -e "$HOME_DIR/.ssh" ]; then chown -R root:root "$HOME_DIR/.ssh"; fi
+  # Only the fixed paths, never recursive: other .ssh entries are left as they are (and stay unreachable
+  # for writes once .ssh is root-owned). backup_account refused symlinks for these before any change.
+  for f in "$HOME_DIR/.ssh/authorized_keys" "$HOME_DIR/.ssh"; do
+    if [ -e "$f" ] && [ ! -L "$f" ]; then chown -h root:root -- "$f"; fi
+  done
   for f in /etc/cron.deny /etc/at.deny; do grep -qx "$USER_NAME" "$f" 2>/dev/null || echo "$USER_NAME" >> "$f"; done
 }
 
@@ -290,23 +294,58 @@ rollback() {
   say "rolled back (sshd not reloaded)"
 }
 
-# Pre-existing account: setup_account rewrites shell, home, password field and home/.ssh ownership.
-# Save all of it so rollback can put it back exactly. The password field (a hash) goes only into a
+# Pre-existing account: setup_account rewrites shell, home, password field and the owner of the fixed paths
+# HOME_DIR, HOME_DIR/.ssh, HOME_DIR/.ssh/authorized_keys. Only those three are recorded (owner:group mode in
+# shell variables, no file names are ever read back or parsed). The password field (a hash) goes only into a
 # root-only 0600 file under $BAK (inside the 0700 mktemp dir); it is never printed and is removed after use.
 backup_account() {
-  ACCT_EXISTED=0; : > "$BAK/account.perms"
-  if [ -e "$HOME_DIR" ]; then stat -c '%u:%g %a %n' -- "$HOME_DIR" >> "$BAK/account.perms"; fi
-  if [ -e "$HOME_DIR/.ssh" ]; then find "$HOME_DIR/.ssh" -exec stat -c '%u:%g %a %n' -- {} + >> "$BAK/account.perms"; fi
+  ACCT_EXISTED=0; PERM_HOME=; PERM_SSH=; PERM_AK=
+  for f in "$HOME_DIR" "$HOME_DIR/.ssh" "$HOME_DIR/.ssh/authorized_keys"; do
+    if [ -L "$f" ]; then die "$f is a symlink; refusing to touch it"; fi
+  done
+  if [ -e "$HOME_DIR" ] && [ ! -d "$HOME_DIR" ]; then die "$HOME_DIR exists and is not a directory"; fi
+  if [ -e "$HOME_DIR/.ssh" ] && [ ! -d "$HOME_DIR/.ssh" ]; then die "$HOME_DIR/.ssh exists and is not a directory"; fi
+  if [ -e "$HOME_DIR/.ssh/authorized_keys" ] && [ ! -f "$HOME_DIR/.ssh/authorized_keys" ]; then
+    die "$HOME_DIR/.ssh/authorized_keys exists and is not a regular file"
+  fi
+  if [ -d "$HOME_DIR" ]; then PERM_HOME=$(stat -c '%u:%g %a' -- "$HOME_DIR"); fi
+  if [ -d "$HOME_DIR/.ssh" ]; then PERM_SSH=$(stat -c '%u:%g %a' -- "$HOME_DIR/.ssh"); fi
+  if [ -f "$HOME_DIR/.ssh/authorized_keys" ]; then PERM_AK=$(stat -c '%u:%g %a' -- "$HOME_DIR/.ssh/authorized_keys"); fi
   pw=$(getent passwd "$USER_NAME") || return 0
   ACCT_EXISTED=1
   command -v chpasswd >/dev/null 2>&1 || die "chpasswd not found: cannot guarantee a password-field rollback for $USER_NAME"
   ACCT_HOME=$(printf '%s' "$pw" | cut -d: -f6); ACCT_SHELL=$(printf '%s' "$pw" | cut -d: -f7)
-  (umask 077; getent shadow "$USER_NAME" | cut -d: -f2 > "$BAK/account.shadow") || die "cannot read shadow entry for $USER_NAME"
+  # getent's status is checked on its own (a pipe would report cut's), and an empty answer is refused too,
+  # so a missing entry can never be "restored" as an empty password.
+  sp=$(getent shadow "$USER_NAME") || die "cannot read shadow entry for $USER_NAME"
+  [ -n "$sp" ] || die "empty shadow entry for $USER_NAME"
+  (umask 077; printf '%s\n' "$sp" | cut -d: -f2 > "$BAK/account.shadow") || die "cannot save shadow field for $USER_NAME"
+  unset sp
   chmod 0600 "$BAK/account.shadow"
+}
+# restore_perm PATH TYPE(d|f) "UID:GID MODE": put one fixed path back, only if it differs. The target must be
+# a non-symlink of the expected type and its parent a root-owned non-symlink directory, so a live account
+# cannot swap anything under us (callers go deepest-first while the parents are still root-owned).
+restore_perm() {
+  [ -n "$3" ] || return 0
+  if [ "$(stat -c '%u:%g %a' -- "$1" 2>/dev/null)" = "$3" ]; then return 0; fi
+  par=$(dirname -- "$1")
+  if [ -L "$par" ] || [ ! -d "$par" ] || [ "$(stat -c %u -- "$par")" != 0 ]; then
+    warn "not restoring $1: parent is not a root-owned directory"; return 0
+  fi
+  ok=0; case $2 in d) [ -d "$1" ] && ok=1 ;; f) [ -f "$1" ] && ok=1 ;; esac
+  if [ -L "$1" ] || [ "$ok" = 0 ]; then warn "not restoring $1: no longer the expected type"; return 0; fi
+  chown -h "${3% *}" -- "$1" || warn "could not restore owner of $1"
+  if [ ! -L "$1" ]; then chmod "${3#* }" -- "$1" || warn "could not restore mode of $1"; fi
 }
 restore_account() {
   [ "${ACCT_EXISTED:-0}" = 1 ] || return 0
-  usermod --shell "$ACCT_SHELL" --home "$ACCT_HOME" "$USER_NAME" || warn "could not restore shell/home of $USER_NAME"
+  # No process of the account may race the restore; the account is still locked by setup_account here.
+  pkill -KILL -u "$USER_NAME" 2>/dev/null || true
+  restore_perm "$HOME_DIR/.ssh/authorized_keys" f "$PERM_AK"
+  restore_perm "$HOME_DIR/.ssh" d "$PERM_SSH"
+  restore_perm "$HOME_DIR" d "$PERM_HOME"
+  usermod --shell "$ACCT_SHELL" --home "$ACCT_HOME" "$USER_NAME" || warn "could not restore shell/home of $USER_NAME (left on auditsh)"
   if [ -f "$BAK/account.shadow" ]; then
     # chpasswd -e writes the saved field verbatim from stdin ('!'/'*'/'!!' lock prefixes and an empty field
     # included), so the hash never appears in argv. No argv fallback: if it fails, say so loudly.
@@ -318,12 +357,6 @@ restore_account() {
     fi
     rm -f "$BAK/account.shadow"
   fi
-  while IFS= read -r l; do
-    o=${l%% *}; r=${l#* }; m=${r%% *}; f=${r#* }
-    [ -e "$f" ] || continue
-    chown -h "$o" -- "$f" || warn "could not restore owner of $f"
-    [ -L "$f" ] || chmod "$m" -- "$f" || warn "could not restore mode of $f"
-  done < "$BAK/account.perms"
   if [ "$HOME_EXISTED" = 0 ] && [ "$HOME_DIR" != "$ACCT_HOME" ]; then rmdir -- "$HOME_DIR" 2>/dev/null || true; fi
 }
 # Test-only fault injection: needs both --test-hooks and AUDITSH_TEST_FAIL_AFTER=<step>.

@@ -121,6 +121,7 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 		res := result{bytes: cw.n, truncated: cw.truncated}
 		if err != nil {
 			res.exit = 1
+			res.timedOut = errors.Is(err, errOutputDeadline)
 			fmt.Fprintln(os.Stderr, "auditsh: read failed")
 		}
 		return res, nil
@@ -134,6 +135,7 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 		res := result{bytes: cw.n, truncated: cw.truncated}
 		if err != nil {
 			res.exit = 1
+			res.timedOut = errors.Is(err, errOutputDeadline)
 			fmt.Fprintln(os.Stderr, "auditsh: read failed")
 		}
 		return res, nil
