@@ -33,6 +33,7 @@ t "install (must not open SSH access)"
 $ADD; echo "rc=$?"
 id botaudit; getent passwd botaudit; passwd -S botaudit
 grep -E "/usr/s?bin/ss" /etc/sudoers.d/botaudit /etc/auditsh/allowlist.yaml | cut -c1-90
+grep -cE "path: /usr/bin/(dpkg-query|rpm)," /etc/auditsh/allowlist.yaml; grep -oE "path: /usr/bin/(dpkg-query|rpm)," /etc/auditsh/allowlist.yaml
 stat -c '%U:%G %a %n' /usr/local/sbin/auditsh /etc/auditsh/allowlist.yaml /etc/sudoers.d/botaudit /home/botaudit /usr/share/auditsh/50-botaudit.conf
 grep -x /usr/local/sbin/auditsh /etc/shells; grep -x botaudit /etc/cron.deny /etc/at.deny
 ls /etc/ssh/sshd_config.d/50-botaudit.conf /etc/ssh/authorized_keys 2>&1
@@ -60,6 +61,11 @@ sudo -l -U botaudit | grep -E 'auditsh-jvm|ss -tlnp' | sed 's/^ *//'
 t "e2e ssh"; /src/sl & sleep 0.3; /usr/sbin/sshd -o ListenAddress=127.0.0.1 -p 2222
 O="-i /root/tk -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=error"
 ssh $O botaudit@127.0.0.1 uptime; echo "rc=$?"; ssh $O botaudit@127.0.0.1 'ss -tlnp' | head -2; echo "ss rc=$?"; ssh $O botaudit@127.0.0.1 'sh -c id'; echo "rc=$?"; ssh $O -tt botaudit@127.0.0.1 </dev/null; echo "rc=$?"
+for c in 'uname -a' 'getent group' 'sshd -T' 'dpkg-query -l' 'rpm -qa' 'who'; do
+  # shellcheck disable=SC2029  # $c is a fixed local test string
+  ssh $O botaudit@127.0.0.1 "$c" >/tmp/o 2>&1; echo "[$c] rc=$? lines=$(wc -l </tmp/o) first=$(head -c 40 /tmp/o | head -1)"
+done
+ssh $O botaudit@127.0.0.1 'crontab -e -u root'; echo "crontab -e rc=$?"
 t "java: denied forms (rc=126 each, sudo/helper never reached for pid 1 = not java)"
 for c in 'jcmd 1 VM.uptime' 'jcmd 1 GC.heap_dump /tmp/x' 'jcmd abc GC.heap_info' 'jcmd 1 GC.heap_info extra' 'jcmd 1 VM.command_line' 'jstat -gcutil 1 1000 11'; do
   # shellcheck disable=SC2029  # $c is meant to be sent verbatim
