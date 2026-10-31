@@ -19,7 +19,7 @@ contents:
   - src: install.sh
     dst: /usr/sbin/auditsh-setup
     file_info: {mode: 0755, owner: root, group: root}
-  - src: allowlist.yaml
+  - src: stage/deb/allowlist.yaml
     dst: /etc/auditsh/allowlist.yaml
     type: config|noreplace
     packager: deb

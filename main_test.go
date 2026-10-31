@@ -52,6 +52,19 @@ func TestAllowed(t *testing.T) {
 	}
 }
 
+func TestSystemAuditAllowed(t *testing.T) {
+	c := defaultCfg(t)
+	for _, cmd := range []string{
+		"who", "last -n 1", "last -n 50", "last -n 9999", "uname -a", "dpkg-query -l", "rpm -qa",
+		"systemctl list-units --failed --no-pager", "systemctl list-timers --no-pager",
+		"getent passwd", "getent group", "sshd -T", "crontab -l -u root", "nft list ruleset", "auditctl -l",
+	} {
+		if err := check(c, cmd); err != nil {
+			t.Errorf("%q denied: %v", cmd, err)
+		}
+	}
+}
+
 func TestDenied(t *testing.T) {
 	c := defaultCfg(t)
 	for _, cmd := range []string{
@@ -74,6 +87,34 @@ func TestDenied(t *testing.T) {
 		"env LD_PRELOAD=x ps aux", "LD_PRELOAD=/tmp/x.so ps aux", "find / -exec sh ;", "awk 1", "xargs", "tee /x", "python3",
 		"/usr/bin/ps aux", "ps '' aux", "ps \"aux\"x", "ps 'unterminated",
 		strings.Repeat("a", 2000), "uptime" + strings.Repeat(" x", 20),
+	} {
+		if err := check(c, cmd); err == nil {
+			t.Errorf("%q allowed, want deny", cmd)
+		}
+	}
+}
+
+func TestSystemAuditDenied(t *testing.T) {
+	c := defaultCfg(t)
+	for _, cmd := range []string{
+		// extra / missing / reordered args
+		"who am i", "who -a", "who /var/log/wtmp", "last", "last -n", "last -n 0", "last -n 10000", "last -n 05",
+		"last -n -1", "last -n 10 -f /etc/shadow", "last -f /etc/shadow -n 10", "last root", "uname", "uname -a -r",
+		"dpkg-query -l x", "dpkg-query -W", "dpkg -l", "rpm -qa x", "rpm -qal", "rpm -e x", "rpm --eval %(id)",
+		"systemctl list-units --failed", "systemctl list-units --no-pager", "systemctl list-units --failed --no-pager -H h",
+		"systemctl list-timers", "systemctl list-timers --no-pager --all", "systemctl --failed --no-pager",
+		"getent", "getent shadow", "getent gshadow", "getent passwd root", "getent hosts x",
+		"sshd", "sshd -T -f /etc/shadow", "sshd -T -C user=root", "sshd -t", "sshd -d",
+		"crontab -l", "crontab -l -u botaudit", "crontab -e -u root", "crontab -r -u root", "crontab -u root -l",
+		"crontab /tmp/x", "nft list ruleset -a", "nft flush ruleset", "nft -f /tmp/x", "nft list tables",
+		"auditctl -l -k x", "auditctl -D", "auditctl -e 0", "auditctl -s", "iptables -S", "cat /etc/os-release",
+		// pagers / exec
+		"systemctl list-units --failed --pager", "systemctl list-timers --no-pager | less", "less", "more", "pager",
+		"last -n 10 | less", "PAGER=less systemctl list-timers --no-pager",
+		// shell metacharacters
+		"who; id", "who && id", "uname -a | sh", "uname `id`", "uname $(id)", "last -n 1$(id)", "getent passwd>/tmp/x",
+		"getent passwd </etc/shadow", "crontab -l -u root;id", "nft list ruleset & id", "auditctl -l\nid", "who\nid",
+		"last -n {1..9}", "getent pass*", "getent passw?", "uname ~", "who #x", "sshd -T!",
 	} {
 		if err := check(c, cmd); err == nil {
 			t.Errorf("%q allowed, want deny", cmd)
@@ -469,5 +510,58 @@ func TestNoKeyFPDenied(t *testing.T) {
 	os.WriteFile(p, []byte("publickey ssh-ed25519 !!notbase64!!\n"), 0o600)
 	if keyFingerprint(p) != "" || keyFingerprint(filepath.Join(t.TempDir(), "gone")) != "" {
 		t.Fatal("bad auth info produced a fingerprint")
+	}
+}
+
+// Every sudo rule in allowlist.yaml must have an exact fixed-argv NOEXEC grant in
+// deploy/sudoers.botaudit, and every sudoers grant must correspond to a sudo rule.
+func TestSudoersMatchesAllowlist(t *testing.T) {
+	b, err := os.ReadFile("deploy/sudoers.botaudit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := map[string]bool{}
+	for _, ln := range strings.Split(string(b), "\n") {
+		const pfx = "botaudit ALL=(root) NOPASSWD: NOEXEC: "
+		if !strings.HasPrefix(ln, "botaudit ") {
+			continue
+		}
+		if !strings.HasPrefix(ln, pfx) {
+			t.Errorf("sudoers grant without NOPASSWD: NOEXEC: %q", ln)
+			continue
+		}
+		for _, g := range strings.Split(strings.ReplaceAll(ln[len(pfx):], "\\,", "\x00"), ", ") {
+			g = strings.ReplaceAll(g, "\x00", ",")
+			if strings.ContainsAny(g, "*?[]^$\"") {
+				t.Errorf("sudoers wildcard/regex in %q", g)
+			}
+			grants[g] = true
+		}
+	}
+	c := defaultCfg(t)
+	want := map[string]bool{}
+	for _, n := range c.Order {
+		for _, r := range c.Rules[n] {
+			if !r.Sudo {
+				continue
+			}
+			parts := []string{r.Path}
+			for _, a := range r.Args {
+				if a.literal == "" {
+					t.Errorf("%s: sudo rule with non-literal arg", r.ID)
+				}
+				parts = append(parts, a.literal)
+			}
+			g := strings.Join(parts, " ")
+			want[g] = true
+			if !grants[g] {
+				t.Errorf("%s: no sudoers grant for %q", r.ID, g)
+			}
+		}
+	}
+	for g := range grants {
+		if !want[g] {
+			t.Errorf("sudoers grant %q has no allowlist rule", g)
+		}
 	}
 }

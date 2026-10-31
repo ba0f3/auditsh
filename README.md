@@ -41,6 +41,10 @@ The `botaudit` account can run only the exact argv forms in `/etc/auditsh/allowl
 `top -b -n1`, `free [-m|-h]`, `df [-h]`, `uptime`, `cat /proc/meminfo|/proc/<pid>/status|/proc/<pid>/smaps_rollup`,
 `systemctl status <unit> --no-pager`, `journalctl -u <unit> --since <today|yesterday|N h ago|YYYY-MM-DD[ HH:MM[:SS]]> --no-pager [-n N]`,
 sudo: `ss -tlnp`, `ss -ulnp`, `dmesg -T [--level=err|err,warn|emerg,alert,crit,err,warn]`.
+System audit: `who`, `last -n N` (N 1-9999), `uname -a`, `dpkg-query -l` (deb) / `rpm -qa` (rpm),
+`systemctl list-units --failed --no-pager`, `systemctl list-timers --no-pager`, `getent passwd|group`,
+sudo: `sshd -T`, `crontab -l -u root`, `nft list ruleset`, `auditctl -l`. Not included: iptables (alternatives symlink,
+which auditsh refuses; use `nft list ruleset`) and `/etc/os-release` (the internal reader only serves `/proc`).
 Not available: less, more, vi, find, tar, awk, sed, sh, bash, env, xargs, tee, python, git, or anything else on GTFOBins.
 **pmap was dropped.** It needs a PID under sudo, and fixed-argv sudoers can't express that (see design.md §4).
 Use `cat /proc/<pid>/smaps_rollup` instead.
