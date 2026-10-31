@@ -445,3 +445,29 @@ func TestKeyFingerprint(t *testing.T) {
 		t.Fatal("bad path accepted")
 	}
 }
+
+func TestNoKeyFPDenied(t *testing.T) {
+	for _, fp := range []string{"", "SHA256:x"} {
+		marker := filepath.Join(t.TempDir(), "ran")
+		var out, errb bytes.Buffer
+		var lines []string
+		code := serve(env{raw: "fake", cfg: fake(t, "touch "+marker), stdout: &out, stderr: &errb,
+			sshConn: "192.0.2.1 5555 192.0.2.2 22", keyFP: fp,
+			opts: runOpts{timeout: time.Second, maxOutput: 100},
+			logf: func(s string) error { lines = append(lines, s); return nil }})
+		_, err := os.Stat(marker)
+		if fp == "" {
+			if code != 126 || err == nil || len(lines) != 1 || !strings.Contains(lines[0], `"reason":"no key_fp"`) {
+				t.Fatalf("missing key_fp not denied: code=%d lines=%v", code, lines)
+			}
+		} else if code != 0 || err != nil {
+			t.Fatalf("valid key_fp denied: %d %v", code, lines)
+		}
+	}
+	// unreadable / unparseable ExposeAuthInfo yields "" and therefore a deny
+	p := filepath.Join(t.TempDir(), "auth")
+	os.WriteFile(p, []byte("publickey ssh-ed25519 !!notbase64!!\n"), 0o600)
+	if keyFingerprint(p) != "" || keyFingerprint(filepath.Join(t.TempDir(), "gone")) != "" {
+		t.Fatal("bad auth info produced a fingerprint")
+	}
+}

@@ -60,18 +60,31 @@ grep -qx /usr/local/sbin/auditsh /etc/shells || echo /usr/local/sbin/auditsh >> 
 install -d -o root -g root -m 0755 /etc/auditsh
 install -o root -g root -m 0644 allowlist.yaml /etc/auditsh/allowlist.yaml
 useradd --system --create-home --home-dir /home/botaudit --shell /usr/local/sbin/auditsh botaudit
-passwd -l botaudit                       # no password, locked
+usermod -L botaudit                      # = passwd -l: shadow "!" (locked), see "Account lock" below
 chown root:root /home/botaudit && chmod 0755 /home/botaudit
 install -d -o root -g root -m 0755 /etc/ssh/authorized_keys
 install -o root -g root -m 0644 deploy/authorized_keys/botaudit /etc/ssh/authorized_keys/botaudit   # put the real key in
 install -o root -g root -m 0440 deploy/sudoers.botaudit /etc/sudoers.d/botaudit && visudo -cf /etc/sudoers.d/botaudit
 echo botaudit >> /etc/cron.deny; echo botaudit >> /etc/at.deny
+sed -i 's/^\s*AcceptEnv/# &/' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf   # no AcceptEnv at all
 install -o root -g root -m 0644 deploy/sshd_config.d/50-botaudit.conf /etc/ssh/sshd_config.d/50-botaudit.conf
 sshd -t && sshd -T -C user=botaudit,host=x,addr=192.0.2.10 | grep -i forcecommand && systemctl reload ssh
 mount -o remount,hidepid=2 /proc   # recommended, see below; persist in /etc/fstab
 # optional: route local7 to a root-only file, e.g. rsyslog: local7.* /var/log/auditsh.log
 ```
 If `PermitUserEnvironment` is set to anything other than `no`, set it back to `no` globally.
+## Key lines
+Every line in `/etc/ssh/authorized_keys/botaudit` **must** start with
+`restrict,command="/usr/local/sbin/auditsh"` (optionally `,from="..."`). Without `command=`, losing the
+Match block would let `Subsystem sftp internal-sftp` bypass auditsh. Alert on any key line that lacks it:
+`grep -v '^#' /etc/ssh/authorized_keys/botaudit | grep -v '^restrict,command="/usr/local/sbin/auditsh"'` must print nothing.
+
+## Account lock (verify on staging)
+Tested target config: `UsePAM yes` (Debian default) with the account locked by `usermod -L` / `passwd -l`
+(shadow `!`). Under `UsePAM yes`, sshd still allows publickey for a `!` account. With `UsePAM no`,
+sshd treats `!` as locked and also refuses publickey. In that case, use `usermod -p '*' botaudit`
+(`*` = no valid password, but not "locked"). Check: `ssh -i key botaudit@host uptime` works and password login fails.
+
 ## Uninstall
 ```sh
 rm /etc/ssh/sshd_config.d/50-botaudit.conf /etc/ssh/authorized_keys/botaudit && sshd -t && systemctl reload ssh
@@ -109,4 +122,11 @@ sed -i '\#^/usr/local/sbin/auditsh$#d' /etc/shells; sed -i '/^botaudit$/d' /etc/
 - The binary paths assume usrmerge (`/usr/bin/ss`). On RHEL, ss lives in `/usr/sbin/ss`. Edit allowlist.yaml and sudoers to match.
 - Load and DoS: each session runs one command, capped at 15 s and 1 MiB. sshd `MaxStartups`/`MaxSessions` limit concurrency.
 - The timeout kills the process group. A sudo child runs as root, and sudo relays the kill to it.
+- Attribution: when `SSH_CONNECTION` is set but the key fingerprint can't be read (ExposeAuthInfo file
+  missing, empty or unparseable), auditsh denies with reason `no key_fp`. sshd deletes that file at session
+  teardown, so a client that disconnects at once (e.g. `ssh -tt` with the PTY refused) can lose the race.
+  auditsh now reads the file first thing in main, and the deny holds regardless.
+- setsid'd descendants can outlive the timeout (none of the allowlisted binaries do this). A future option is
+  to run each command in a transient cgroup (`systemd-run --scope -p RuntimeMaxSec=20`); it isn't done
+  now because it adds a systemd dependency and privileges. On revocation, `pkill -u botaudit`.
 - Kernel or sshd bugs are out of scope.

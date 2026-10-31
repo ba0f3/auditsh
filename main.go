@@ -122,6 +122,10 @@ func serve(e env) int {
 	if e.invErr != nil {
 		return deny(e.invErr.Error())
 	}
+	// Attribution is mandatory over SSH: no key fingerprint, no command (fail closed).
+	if e.sshConn != "" && e.keyFP == "" {
+		return deny("no key_fp")
+	}
 	if e.cfgErr != nil {
 		return deny("config refused: " + e.cfgErr.Error())
 	}
@@ -203,6 +207,9 @@ func keyFingerprint(path string) string {
 }
 
 func main() {
+	// Read sshd's ExposeAuthInfo file first: sshd deletes it at session teardown, so
+	// an early client disconnect (e.g. ssh -tt with PTY refused) can race this read.
+	keyFP := keyFingerprint(os.Getenv("SSH_USER_AUTH"))
 	// Handle (not ignore) HUP/PIPE so a client disconnect cannot kill us before the end
 	// record; handled dispositions reset to default in exec'd children.
 	signal.Notify(make(chan os.Signal, 1), syscall.SIGHUP, syscall.SIGPIPE)
@@ -226,7 +233,7 @@ func main() {
 	os.Exit(serve(env{
 		raw: raw, invErr: invErr, cfg: cfg, cfgErr: cfgErr,
 		stdout: os.Stdout, stderr: os.Stderr, logf: logf,
-		user: u, client: clientIP(), sshConn: os.Getenv("SSH_CONNECTION"), keyFP: keyFingerprint(os.Getenv("SSH_USER_AUTH")),
+		user: u, client: clientIP(), sshConn: os.Getenv("SSH_CONNECTION"), keyFP: keyFP,
 		opts: runOpts{timeout: defaultTimeout, maxOutput: defaultMaxOut, checkBin: true, binOwnerUID: 0, sudo: sudoPath},
 	}))
 }
