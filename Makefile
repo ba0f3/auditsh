@@ -1,0 +1,6 @@
+build:
+	./build.sh
+
+test:
+	go test -race -count=1 ./...
+	go vet ./...

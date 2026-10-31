@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const sudoPath = "/usr/bin/sudo"
+const (
+	sudoPath  = "/usr/bin/sudo"
+	waitDelay = 2 * time.Second
+)
 
 var cleanEnv = []string{
 	"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C", "PAGER=cat",
@@ -88,8 +91,13 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 	}
 
 	if o.checkBin {
-		if err := checkOwnedSafe(r.Path, o.binOwnerUID); err != nil {
+		if err := checkTree(r.Path, o.binOwnerUID); err != nil {
 			return result{exit: 126}, fmt.Errorf("binary check: %w", err)
+		}
+		if r.Sudo {
+			if err := checkTree(o.sudo, o.binOwnerUID); err != nil {
+				return result{exit: 126}, fmt.Errorf("sudo check: %w", err)
+			}
 		}
 	}
 	name, argv := r.Path, args
@@ -97,7 +105,11 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 		name = o.sudo
 		argv = append([]string{"-n", "--", r.Path}, args...)
 	}
-	cmd := exec.Command(name, argv...)
+	cmd := exec.CommandContext(ctx, name, argv...)
+	// On timeout/cap: SIGKILL the whole process group, then after WaitDelay force-close
+	// our pipe ends so a setsid'd descendant holding stdout cannot stall Wait.
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = waitDelay
 	cmd.Env = cleanEnv
 	cmd.Stdout = cw
 	cmd.Stderr = cw
@@ -111,16 +123,7 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 	if err := cmd.Start(); err != nil {
 		return result{exit: 126}, err
 	}
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		case <-done:
-		}
-	}()
 	werr := cmd.Wait()
-	close(done)
 	res := result{bytes: cw.n, truncated: cw.truncated}
 	res.timedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
 	if werr != nil {

@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -108,7 +110,7 @@ func TestBadConfigs(t *testing.T) {
 
 func TestConfigPerms(t *testing.T) {
 	uid := uint32(os.Getuid())
-	dir := t.TempDir()
+	dir := safeDir(t)
 	os.Chmod(dir, 0o755)
 	p := filepath.Join(dir, "a.yaml")
 	os.WriteFile(p, []byte("commands:\n  - {name: uptime, path: /usr/bin/uptime}\n"), 0o644)
@@ -131,6 +133,12 @@ func TestConfigPerms(t *testing.T) {
 		t.Error("world-writable dir accepted")
 	}
 	os.Chmod(dir, 0o755)
+	tp := filepath.Join(t.TempDir(), "a.yaml") // parent chain includes /tmp (1777)
+	os.WriteFile(tp, []byte("commands:\n  - {name: uptime, path: /usr/bin/uptime}\n"), 0o644)
+	os.Chmod(filepath.Dir(tp), 0o755)
+	if _, err := loadConfig(tp, uid); err == nil {
+		t.Error("config under world-writable ancestor accepted")
+	}
 	l := filepath.Join(dir, "l.yaml")
 	os.Symlink(p, l)
 	if _, err := loadConfig(l, uid); err == nil {
@@ -152,8 +160,15 @@ func fake(t *testing.T, body string) *config {
 
 func run(t *testing.T, c *config, raw string, o runOpts) (int, string, string, logEntry) {
 	t.Helper()
+	code, out, errs, les := runAll(t, c, raw, o)
+	return code, out, errs, les[len(les)-1]
+}
+
+// runAll returns every audit record written for one invocation.
+func runAll(t *testing.T, c *config, raw string, o runOpts) (int, string, string, []logEntry) {
+	t.Helper()
 	var out, errb bytes.Buffer
-	var line string
+	var lines []string
 	if o.timeout == 0 {
 		o.timeout = 5 * time.Second
 	}
@@ -161,12 +176,33 @@ func run(t *testing.T, c *config, raw string, o runOpts) (int, string, string, l
 		o.maxOutput = 1 << 20
 	}
 	code := serve(env{raw: raw, cfg: c, stdout: &out, stderr: &errb, opts: o, user: "botaudit",
-		client: "192.0.2.1", logf: func(s string) error { line = s; return nil }})
-	var le logEntry
-	if err := json.Unmarshal([]byte(line), &le); err != nil {
-		t.Fatalf("bad log line %q: %v", line, err)
+		client: "192.0.2.1", logf: func(s string) error { lines = append(lines, s); return nil }})
+	var les []logEntry
+	for _, line := range lines {
+		var le logEntry
+		if err := json.Unmarshal([]byte(line), &le); err != nil {
+			t.Fatalf("bad log line %q: %v", line, err)
+		}
+		les = append(les, le)
 	}
-	return code, out.String(), errb.String(), le
+	if len(les) == 0 {
+		t.Fatal("no audit record")
+	}
+	return code, out.String(), errb.String(), les
+}
+
+// safeDir makes a temp dir under the repo (parents 0755) because /tmp is world-writable
+// and would fail the parent-directory check.
+func safeDir(t *testing.T) string {
+	t.Helper()
+	wd, _ := os.Getwd()
+	d, err := os.MkdirTemp(wd, ".t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(d, 0o755)
+	t.Cleanup(func() { os.RemoveAll(d) })
+	return d
 }
 
 func TestEnvNotPropagated(t *testing.T) {
@@ -236,11 +272,117 @@ func TestLogging(t *testing.T) {
 }
 
 func TestLogFailureFailsClosed(t *testing.T) {
-	var out bytes.Buffer
-	code := serve(env{raw: "fake", cfg: fake(t, "echo hi"), stdout: &out, stderr: &out,
+	marker := filepath.Join(t.TempDir(), "ran")
+	var out, errb bytes.Buffer
+	code := serve(env{raw: "fake", cfg: fake(t, "touch "+marker+"; echo hi"), stdout: &out, stderr: &errb,
 		opts: runOpts{timeout: time.Second, maxOutput: 100}, logf: func(string) error { return os.ErrClosed }})
-	if code != 125 {
-		t.Fatal(code)
+	if code != 125 || out.Len() != 0 {
+		t.Fatalf("code=%d out=%q", code, out.String())
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("command executed although start record failed")
+	}
+}
+
+func TestStartEndRecords(t *testing.T) {
+	_, _, _, les := runAll(t, fake(t, "echo hi"), "fake", runOpts{})
+	if len(les) != 2 || les[0].Phase != "start" || les[1].Phase != "end" || les[0].Rule != "fake#0" || les[1].Bytes != 3 {
+		t.Fatalf("%+v", les)
+	}
+	// killed midway by timeout: start then end with timed_out and a kill exit code
+	_, _, _, les = runAll(t, fake(t, "echo partial; sleep 30"), "fake", runOpts{timeout: 300 * time.Millisecond})
+	if len(les) != 2 || les[0].Phase != "start" || les[1].Phase != "end" || !les[1].TimedOut || les[1].Exit == 0 || les[1].Bytes != 8 {
+		t.Fatalf("%+v", les)
+	}
+	_, _, _, les = runAll(t, fake(t, "echo x"), "fake; id", runOpts{})
+	if len(les) != 1 || les[0].Phase != "deny" {
+		t.Fatalf("%+v", les)
+	}
+}
+
+func TestWaitDelaySetsidPipeHolder(t *testing.T) {
+	pidf := filepath.Join(t.TempDir(), "pid")
+	c := fake(t, "setsid sh -c 'echo $$ > "+pidf+"; exec sleep 40' & sleep 40")
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidf); err == nil {
+			var pid int
+			fmt.Sscan(string(b), &pid)
+			if pid > 1 {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	to := 300 * time.Millisecond
+	start := time.Now()
+	_, _, _, le := run(t, c, "fake", runOpts{timeout: to})
+	if d := time.Since(start); d > to+waitDelay+time.Second {
+		t.Fatalf("returned after %v", d)
+	}
+	if !le.TimedOut || le.Phase != "end" {
+		t.Fatalf("%+v", le)
+	}
+}
+
+func TestResolveCommand(t *testing.T) {
+	for _, tc := range []struct {
+		args    []string
+		orig    string
+		origSet bool
+		want    string
+		ok      bool
+	}{
+		{[]string{"-c", selfPath}, "uptime", true, "uptime", true},
+		{[]string{"-c", selfPath}, "", false, "", true}, // -> empty -> deny with list
+		{[]string{"-c", "uptime"}, "", false, "uptime", true},
+		{[]string{"-c", "uptime"}, "uptime", true, "uptime", true},
+		{[]string{"-c", "uptime"}, "free", true, "", false},
+		{nil, "uptime", true, "", false},
+		{[]string{"-c"}, "", false, "", false},
+		{[]string{"-c", "uptime", "x"}, "", false, "", false},
+		{[]string{"-l"}, "", false, "", false},
+		{[]string{"-i", "uptime"}, "", false, "", false},
+	} {
+		got, err := resolveCommand(tc.args, tc.orig, tc.origSet)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("%v: got %q err=%v", tc.args, got, err)
+		}
+	}
+	var b bytes.Buffer
+	var line string
+	code := serve(env{invErr: fmt.Errorf("bad invocation"), stdout: &b, stderr: &b, logf: func(s string) error { line = s; return nil }})
+	if code == 0 || !strings.Contains(line, `"phase":"deny"`) {
+		t.Fatal("bad invocation must deny and log")
+	}
+}
+
+func TestCheckTree(t *testing.T) {
+	if err := checkTree("/usr/bin/env", 0); err != nil {
+		t.Errorf("root-owned binary refused: %v", err)
+	}
+	d := safeDir(t)
+	p := filepath.Join(d, "bin")
+	os.WriteFile(p, []byte("x"), 0o755)
+	if err := checkTree(p, 0); err == nil {
+		t.Error("non-root binary/parents accepted")
+	}
+	if err := checkTree("/usr/bin/../bin/env", 0); err == nil {
+		t.Error("unclean path accepted")
+	}
+	w := filepath.Join(d, "w")
+	os.Mkdir(w, 0o755)
+	os.Chmod(w, 0o777)
+	os.WriteFile(filepath.Join(w, "b"), []byte("x"), 0o755)
+	if err := checkTree(filepath.Join(w, "b"), uint32(os.Getuid())); err == nil {
+		t.Error("world-writable parent accepted")
+	}
+}
+
+func TestLogEscapesNonASCII(t *testing.T) {
+	_, _, _, le := run(t, fake(t, "true"), "uptime é\u202e", runOpts{})
+	for _, r := range le.Command {
+		if r > 0x7e {
+			t.Fatalf("non-ASCII in log: %q", le.Command)
+		}
 	}
 }
 

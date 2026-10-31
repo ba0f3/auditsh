@@ -5,13 +5,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/syslog"
 	"os"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -32,6 +35,7 @@ type logEntry struct {
 	KeyFP      string   `json:"key_fp"`
 	Command    string   `json:"raw"`
 	Argv       []string `json:"argv,omitempty"`
+	Phase      string   `json:"phase"` // deny | start | end
 	Decision   string   `json:"decision"`
 	Rule       string   `json:"rule,omitempty"`
 	Deny       string   `json:"reason,omitempty"`
@@ -57,6 +61,7 @@ type env struct {
 	cfgErr  error
 	stdout  io.Writer
 	stderr  io.Writer
+	invErr  error // bad invocation shape (see resolveCommand)
 	logf    func(string) error
 	opts    runOpts
 	user    string
@@ -65,7 +70,31 @@ type env struct {
 	keyFP   string
 }
 
-// serve handles one invocation and returns the process exit code. It always logs exactly once.
+// selfPath is where auditsh is installed; it is both the login shell and the ForceCommand.
+const selfPath = "/usr/local/sbin/auditsh"
+
+// resolveCommand derives the client command from how sshd invoked us. auditsh is the
+// login shell, so sshd runs `auditsh -c <cmd>`:
+//   - ["-c", selfPath]: ForceCommand / authorized_keys command= path; the client's
+//     command is SSH_ORIGINAL_COMMAND (may be empty -> deny with list).
+//   - ["-c", X]: no ForceCommand applied (e.g. Match block lost); X is the client command.
+//     If SSH_ORIGINAL_COMMAND is also set it must equal X, otherwise deny.
+//   - anything else (no args = interactive login, extra args, other flags): deny.
+func resolveCommand(args []string, orig string, origSet bool) (string, error) {
+	if len(args) != 2 || args[0] != "-c" {
+		return "", errors.New("bad invocation (interactive login or unexpected argv)")
+	}
+	if args[1] == selfPath {
+		return orig, nil
+	}
+	if origSet && orig != args[1] {
+		return "", errors.New("-c command disagrees with SSH_ORIGINAL_COMMAND")
+	}
+	return args[1], nil
+}
+
+// serve handles one invocation and returns the process exit code. Denials log one
+// "deny" record; allowed commands log "start" (required before exec) and "end".
 func serve(e env) int {
 	start := time.Now()
 	le := logEntry{TS: start.UTC().Format(time.RFC3339Nano), User: e.user, Client: e.client, SSHConn: e.sshConn, KeyFP: e.keyFP, Decision: "deny"}
@@ -73,7 +102,7 @@ func serve(e env) int {
 	if len(le.Command) > maxLogCmd {
 		le.Command = le.Command[:maxLogCmd] + "...[cut]"
 	}
-	le.Command = fmt.Sprintf("%q", le.Command) // escapes controls/non-ASCII
+	le.Command = fmt.Sprintf("%+q", le.Command) // ASCII-only: escapes controls and all non-ASCII
 	finish := func(code int) int {
 		le.Exit = code
 		le.DurationMS = time.Since(start).Milliseconds()
@@ -85,9 +114,13 @@ func serve(e env) int {
 		return code
 	}
 	deny := func(reason string) int {
+		le.Phase = "deny"
 		le.Deny = reason
 		fmt.Fprintf(e.stderr, "auditsh: denied: %s\n", reason)
 		return finish(126)
+	}
+	if e.invErr != nil {
+		return deny(e.invErr.Error())
 	}
 	if e.cfgErr != nil {
 		return deny("config refused: " + e.cfgErr.Error())
@@ -105,7 +138,13 @@ func serve(e env) int {
 	if err != nil {
 		return deny(err.Error())
 	}
-	le.Rule, le.Argv, le.Decision = r.ID, argv, "allow"
+	le.Rule, le.Argv, le.Decision, le.Phase = r.ID, argv, "allow", "start"
+	// Fail closed: nothing executes unless the start record was accepted by syslog.
+	if b, _ := json.Marshal(le); e.logf(string(b)) != nil {
+		fmt.Fprintln(e.stderr, "auditsh: audit log unavailable, refusing")
+		return 125
+	}
+	le.Phase = "end"
 	res, err := execute(r, argv[1:], e.stdout, e.opts)
 	le.Bytes, le.Truncated, le.TimedOut = res.bytes, res.truncated, res.timedOut
 	if err != nil {
@@ -164,6 +203,14 @@ func keyFingerprint(path string) string {
 }
 
 func main() {
+	// Handle (not ignore) HUP/PIPE so a client disconnect cannot kill us before the end
+	// record; handled dispositions reset to default in exec'd children.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGHUP, syscall.SIGPIPE)
+	orig, origSet := os.LookupEnv("SSH_ORIGINAL_COMMAND")
+	raw, invErr := resolveCommand(os.Args[1:], orig, origSet)
+	if invErr != nil {
+		raw = strings.Join(os.Args[1:], " ")
+	}
 	cfg, cfgErr := loadConfig(configPath, 0)
 	u := ""
 	if cu, err := user.Current(); err == nil {
@@ -177,7 +224,7 @@ func main() {
 		return sl.Info(s)
 	}
 	os.Exit(serve(env{
-		raw: os.Getenv("SSH_ORIGINAL_COMMAND"), cfg: cfg, cfgErr: cfgErr,
+		raw: raw, invErr: invErr, cfg: cfg, cfgErr: cfgErr,
 		stdout: os.Stdout, stderr: os.Stderr, logf: logf,
 		user: u, client: clientIP(), sshConn: os.Getenv("SSH_CONNECTION"), keyFP: keyFingerprint(os.Getenv("SSH_USER_AUTH")),
 		opts: runOpts{timeout: defaultTimeout, maxOutput: defaultMaxOut, checkBin: true, binOwnerUID: 0, sudo: sudoPath},

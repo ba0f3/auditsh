@@ -65,12 +65,31 @@ func checkOwnedSafe(path string, ownerUID uint32) error {
 	return nil
 }
 
-func loadConfig(path string, ownerUID uint32) (*config, error) {
-	// The file and its parent directory must be owner-controlled.
-	if err := checkOwnedSafe(filepath.Dir(path), ownerUID); err != nil {
-		return nil, err
+// checkTree checks path and every parent directory up to "/": none may be a symlink or
+// group/world-writable, and each must be owned by root or ownerUID (both 0 in production).
+func checkTree(path string, ownerUID uint32) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return fmt.Errorf("%s: not absolute/clean", path)
 	}
 	if err := checkOwnedSafe(path, ownerUID); err != nil {
+		return err
+	}
+	for d := filepath.Dir(path); ; d = filepath.Dir(d) {
+		err := checkOwnedSafe(d, ownerUID)
+		if err != nil && ownerUID != 0 {
+			err = checkOwnedSafe(d, 0)
+		}
+		if err != nil {
+			return err
+		}
+		if d == "/" {
+			return nil
+		}
+	}
+}
+
+func loadConfig(path string, ownerUID uint32) (*config, error) {
+	if err := checkTree(path, ownerUID); err != nil {
 		return nil, err
 	}
 	b, err := os.ReadFile(path)
