@@ -203,7 +203,7 @@ AcceptEnv, runs the `sshd -t`/`sshd -T` checks and reloads sshd. On any failure 
 `apt remove` / `dpkg -r` / `rpm -e` (not upgrade) runs `auditsh-setup --uninstall --package` first. That
 removes the drop-in, the keys and the user, restores AcceptEnv and cleans `/etc/shells` and cron/at deny.
 `dpkg --purge` also drops the allowlist. The package refuses to install (preinst/%pre, before
-any file is placed) if an existing `botaudit` looks wrong: uid or gid 0, uid outside `SYS_UID_MIN..SYS_UID_MAX` from `/etc/login.defs` (fallback 100..999), or primary group not `botaudit`. After an upgrade, if you had
+any file is placed) if an existing `botaudit` looks wrong: uid or gid 0, uid outside `SYS_UID_MIN..SYS_UID_MAX` from `/etc/login.defs` (fallback 100..999), primary group not `botaudit`, gid outside `SYS_GID_MIN..SYS_GID_MAX` (fallback 100..999), uid or gid shared with another account/group, or any supplementary group. `--uid N` must match an existing botaudit. After an upgrade, if you had
 edited `/etc/auditsh/allowlist.yaml`, your copy is kept and the new default is written beside it as
 `allowlist.yaml.dpkg-dist` (deb) or `allowlist.yaml.rpmnew` (rpm): diff and merge it by hand, then
 delete it. Sudoers is always replaced by the packaged rules. On RHEL-family systems `ss` is `/usr/sbin/ss`, so the rpm ships
