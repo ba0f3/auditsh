@@ -175,8 +175,8 @@ func Validate(args []string, now time.Time) (Plan, error) {
 			return Plan{}, err
 		}
 		// until in the future would make docker wait for live events: refused.
-		if !s.Before(u) || u.After(now) || u.Sub(s) > MaxEventsWindow {
-			return Plan{}, deny("events needs since < until <= now and a window <= %v", MaxEventsWindow)
+		if !s.Before(u) || u.After(now) || u.Sub(s) > MaxEventsWindow || now.Sub(s) > MaxLogsSince {
+			return Plan{}, deny("events needs since < until <= now, a window <= %v, since within the last %v", MaxEventsWindow, MaxLogsSince)
 		}
 		return Plan{[]string{"events", "--since", unix(s), "--until", unix(u), "--format", eventsFormat}, KindStream}, nil
 	}

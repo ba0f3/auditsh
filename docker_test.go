@@ -13,7 +13,7 @@ import (
 // the outer layer must refuse every dangerous form on its own (defence in depth).
 func TestDockerAllowlistLayer(t *testing.T) {
 	c := defaultCfg(t)
-	now := time.Now()
+	now := time.Unix(1700007200, 0) // fixed: absolute times below must stay within the 7-day lookback
 	for _, cmd := range []string{
 		"docker ps", "docker ps -a", "docker images", "docker info", "docker version", "docker stats --no-stream",
 		"docker network ls", "docker volume ls", "docker inspect web-1", "docker network inspect bridge",

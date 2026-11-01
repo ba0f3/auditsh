@@ -131,7 +131,7 @@ containers (other pid/mount namespace) are out of scope.
 
 `docker ps [-a]`, `images`, `info`, `version`, `stats --no-stream`, `network ls|inspect NAME`, `volume ls`,
 `inspect NAME`, `logs --tail N [--since T] NAME` (N <= 1000, T within 7d), and
-`events --since T1 --until T2` (window <= 24h, until <= now).
+`events --since T1 --until T2` (window <= 24h, until <= now, since within the last 7 days).
 
 These run through a root-owned helper, `/usr/local/sbin/auditsh-docker`, which re-validates argv,
 pins `DOCKER_HOST` and redacts inspect output (Env/Cmd/Args and similar fields never appear).
