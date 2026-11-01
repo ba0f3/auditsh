@@ -19,12 +19,27 @@ builds:
     flags: [-trimpath, -buildvcs=true]
     ldflags: [""]
     mod_timestamp: "{{ .CommitTimestamp }}"
+  # Root-owned docker diagnostics helper (deploy/docker/README.md). Shipped as a bare binary only;
+  # NOT in the deb/rpm (installing it is a manual, separate decision with its own sudoers drop-in).
+  - id: auditsh-docker
+    binary: auditsh-docker
+    main: ./cmd/auditsh-docker
+    env: [CGO_ENABLED=0, GOTOOLCHAIN=local, GOFLAGS=]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath, -buildvcs=true]
+    ldflags: [""]
+    mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
   - id: bin
     ids: [auditsh]
     formats: [binary]
     name_template: "auditsh-linux-{{ .Arch }}"
+  - id: bin-docker
+    ids: [auditsh-docker]
+    formats: [binary]
+    name_template: "auditsh-docker-linux-{{ .Arch }}"
 
 checksum:
   name_template: SHA256SUMS

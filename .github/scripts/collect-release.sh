@@ -8,6 +8,9 @@ for arch in amd64 arm64; do
   set -- dist/auditsh_linux_"$arch"_*/auditsh
   [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "expected one $arch binary in dist/" >&2; exit 1; }
   cp "$1" "release/auditsh-linux-$arch"
+  set -- dist/auditsh-docker_linux_"$arch"_*/auditsh-docker
+  [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "expected one $arch auditsh-docker binary in dist/" >&2; exit 1; }
+  cp "$1" "release/auditsh-docker-linux-$arch"
 done
 cp dist/*.deb dist/*.rpm dist/SHA256SUMS release/
 cp allowlist.yaml install.sh deploy/auditsh-jvm deploy/sudoers.botaudit deploy/sshd_config.d/50-botaudit.conf release/

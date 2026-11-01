@@ -14,11 +14,15 @@ import (
 // internalProcRead is the pseudo-path for rules served by Go's own /proc reader.
 const internalProcRead = "internal:procread"
 
+// dockerHelperPath is the only path a docker: true rule may use (root-owned helper, deploy/README-docker.md).
+const dockerHelperPath = "/usr/local/sbin/auditsh-docker"
+
 type rawRule struct {
 	Name    string   `yaml:"name"`
 	Path    string   `yaml:"path"`
 	Sudo    bool     `yaml:"sudo"`
 	JVM     bool     `yaml:"jvm"`
+	Docker  bool     `yaml:"docker"`
 	Resolve bool     `yaml:"resolve"`
 	Args    []string `yaml:"args"`
 }
@@ -38,6 +42,7 @@ type rule struct {
 	Sudo    bool
 	Resolve bool // path may be a root-owned symlink chain (checkChain); exec the original path
 	JVM     bool // run <Path> (the auditsh-jvm helper) via sudo as the target pid's owner
+	Docker  bool // run <Path> (the auditsh-docker helper) via sudo as root; the helper re-validates argv
 	Args    []argPattern
 	ID      string // e.g. "ps#1" for logs
 }
@@ -128,13 +133,19 @@ func parseConfig(b []byte) (*config, error) {
 		if r.JVM && (r.Sudo || r.Resolve || internal || !jvmTools[r.Name]) {
 			return nil, fmt.Errorf("rule %d: jvm rule must be jcmd/jstat, not sudo/internal", i)
 		}
+		if r.Docker && (r.Sudo || r.JVM || r.Resolve || r.Name != "docker" || r.Path != dockerHelperPath) {
+			return nil, fmt.Errorf("rule %d: docker rule must be name docker, path %s, not sudo/jvm/resolve", i, dockerHelperPath)
+		}
+		if !r.Docker && r.Path == dockerHelperPath {
+			return nil, fmt.Errorf("rule %d: %s only via docker: true", i, dockerHelperPath)
+		}
 		if r.Resolve && (!resolveNames[r.Name] || r.Path != "/usr/sbin/"+r.Name) {
 			return nil, fmt.Errorf("rule %d: resolve only for /usr/sbin/{iptables,ip6tables}[-save]", i)
 		}
 		if r.Path == internalFileRead && (len(r.Args) != 1 || !osFiles[r.Args[0]]) {
 			return nil, fmt.Errorf("rule %d: fileread rule needs exactly one fixed os file path", i)
 		}
-		nr := &rule{Name: r.Name, Path: r.Path, Sudo: r.Sudo, JVM: r.JVM, Resolve: r.Resolve}
+		nr := &rule{Name: r.Name, Path: r.Path, Sudo: r.Sudo, JVM: r.JVM, Docker: r.Docker, Resolve: r.Resolve}
 		for _, p := range r.Args {
 			re, err := regexp.Compile(`^(?:` + p + `)$`)
 			if err != nil {

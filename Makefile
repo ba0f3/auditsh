@@ -11,6 +11,7 @@ FUZZTIME     ?= 30s
 FUZZLONGTIME ?= 30m
 FUZZPARALLEL ?= 2
 FUZZ_TARGETS := FuzzParseCommand FuzzAllowlistExec FuzzEnvSanitize FuzzLogEncoder FuzzProcRead
+FUZZ_TARGETS_DOCKER := FuzzValidate FuzzRedactContainers
 SHELL_FILES  := install.sh build.sh packaging/*.sh tests/chroot-test.sh tests/pkg-test.sh tests/account-check-test.sh deploy/auditsh-jvm .github/scripts/*.sh
 
 .DEFAULT_GOAL := help
@@ -35,12 +36,17 @@ lint: ## gofmt, shellcheck, actionlint, action SHA pins, visudo, goreleaser chec
 	actionlint
 	.github/scripts/check-action-pins.sh
 	visudo -cf deploy/sudoers.botaudit
+	visudo -cf deploy/docker/sudoers.botaudit-docker
 	$(GORELEASER) check
 
 fuzz: ## each fuzz target for FUZZTIME (default 30s)
 	@for f in $(FUZZ_TARGETS); do \
 	  echo "== $$f ($(FUZZTIME))"; \
 	  go test -run '^$$' -fuzz "^$$f\$$" -fuzztime $(FUZZTIME) -parallel $(FUZZPARALLEL) . || exit 1; \
+	done; \
+	for f in $(FUZZ_TARGETS_DOCKER); do \
+	  echo "== dockerpolicy $$f ($(FUZZTIME))"; \
+	  go test -run '^$$' -fuzz "^$$f\$$" -fuzztime $(FUZZTIME) -parallel $(FUZZPARALLEL) ./internal/dockerpolicy || exit 1; \
 	done
 
 fuzz-long: ## each fuzz target for FUZZLONGTIME (default 30m)
