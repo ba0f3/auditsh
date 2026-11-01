@@ -51,6 +51,10 @@ func TestJVMBadConfigs(t *testing.T) {
 		"commands:\n  - {name: jcmd, path: 'internal:procread', jvm: true, args: ['[1-9][0-9]{0,9}']}\n",
 		"commands:\n  - {name: jcmd, path: /x, jvm: true, args: ['[0-9]+', 'VM.flags']}\n",
 		"commands:\n  - {name: jcmd, path: /x, jvm: true, args: ['VM.flags']}\n",
+		// unescaped '.' is a regex wildcard: would admit "GC0heap_info" (FuzzJVMDockerAllowlist finding)
+		"commands:\n  - {name: jcmd, path: /x, jvm: true, args: ['[1-9][0-9]{0,9}', 'GC.heap_info']}\n",
+		"commands:\n  - {name: jcmd, path: /x, jvm: true, args: ['[1-9][0-9]{0,9}', 'VM\\.(flags|uptime)']}\n",
+		"commands:\n  - {name: jcmd, path: /x, jvm: true, args: ['VM\\.flags', '[1-9][0-9]{0,9}']}\n",
 	} {
 		if _, err := parseConfig([]byte(y)); err == nil {
 			t.Errorf("accepted bad jvm config %q", y)
@@ -64,6 +68,16 @@ func fakeProc(t *testing.T, pid, name, uid string) string {
 	os.MkdirAll(filepath.Join(d, pid), 0o755)
 	os.WriteFile(filepath.Join(d, pid, "status"), []byte("Name:\t"+name+"\nUmask:\t0022\nUid:\t"+uid+"\nGid:\t1000\t1000\t1000\t1000\n"), 0o644)
 	return d
+}
+
+func TestJVMEscapedVerbOK(t *testing.T) {
+	c, err := parseConfig([]byte("commands:\n  - {name: jcmd, path: /x, jvm: true, args: ['[1-9][0-9]{0,9}', 'GC\\.heap_info']}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := c.Rules["jcmd"][0].Args[1]; a.literal != "GC.heap_info" || a.re.MatchString("GC0heap_info") {
+		t.Fatalf("escaped verb not exact: %+v", a)
+	}
 }
 
 func lookupFake(uid string) (string, error) {

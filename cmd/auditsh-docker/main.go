@@ -241,19 +241,26 @@ func main() {
 	os.Exit(code)
 }
 
-func run(plan dockerpolicy.Plan) int {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+// command builds (never starts) the docker child for a validated plan: absolute binary, fixed env,
+// cwd /, no stdin, own process group, SIGKILL on parent death. Pure, so it is fuzzed directly.
+func command(ctx context.Context, plan dockerpolicy.Plan) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, dockerBin, plan.Argv...)
 	cmd.Env = env
 	cmd.Dir = "/"
 	cmd.Stdin = nil
-	// Pdeathsig: if the helper itself is SIGKILLed (e.g. sudo command_timeout), the kernel kills docker.
-	// It fires on exit of the creating *thread*, so pin this goroutine to its thread first.
-	runtime.LockOSThread()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 2 * time.Second
+	return cmd
+}
+
+func run(plan dockerpolicy.Plan) int {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := command(ctx, plan)
+	// Pdeathsig: if the helper itself is SIGKILLed (e.g. sudo command_timeout), the kernel kills docker.
+	// It fires on exit of the creating *thread*, so pin this goroutine to its thread first.
+	runtime.LockOSThread()
 
 	var jsonBuf bytes.Buffer
 	var out *capWriter

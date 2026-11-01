@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
 	"syscall"
 
 	"gopkg.in/yaml.v3"
@@ -152,8 +153,8 @@ func parseConfig(b []byte) (*config, error) {
 				return nil, fmt.Errorf("rule %d: bad pattern %q: %w", i, p, err)
 			}
 			ap := argPattern{re: re}
-			if regexp.QuoteMeta(p) == p {
-				ap.literal = p
+			if lit, ok := literalOf(p); ok {
+				ap.literal = lit
 			}
 			if p == "--" {
 				return nil, fmt.Errorf("rule %d: '--' not allowed", i)
@@ -170,6 +171,15 @@ func parseConfig(b []byte) (*config, error) {
 			if npid != 1 {
 				return nil, fmt.Errorf("rule %d: jvm rule needs exactly one pid arg %q", i, jvmPidPattern)
 			}
+			if r.Name == "jcmd" {
+				for j, a := range nr.Args {
+					if j != 0 || a.literal != "" || a.re.String() != `^(?:`+jvmPidPattern+`)$` {
+						if j == 0 || a.literal == "" {
+							return nil, fmt.Errorf("rule %d: jcmd verb/option %q must be an exact literal after the pid (escape '.')", i, r.Args[j])
+						}
+					}
+				}
+			}
 		}
 		if _, ok := c.Rules[r.Name]; !ok {
 			c.Order = append(c.Order, r.Name)
@@ -181,4 +191,17 @@ func parseConfig(b []byte) (*config, error) {
 		return nil, errors.New("config has no commands")
 	}
 	return c, nil
+}
+
+// literalOf reports whether pattern p matches exactly one string (e.g. `GC\.heap_info`), and returns it.
+func literalOf(p string) (string, bool) {
+	re, err := syntax.Parse(p, syntax.Perl)
+	if err != nil {
+		return "", false
+	}
+	re = re.Simplify()
+	if re.Op != syntax.OpLiteral || re.Flags&syntax.FoldCase != 0 {
+		return "", false
+	}
+	return string(re.Rune), true
 }

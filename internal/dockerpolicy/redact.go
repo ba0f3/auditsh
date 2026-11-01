@@ -49,10 +49,15 @@ func keep(o obj, allow map[string]bool) obj {
 	return out
 }
 
+// maskValues masks every value of a label map. Any other shape (array, string, number...) is not
+// what docker emits and could carry a value, so it is replaced whole (fail closed).
 func maskValues(v any) any {
 	m, ok := v.(obj)
 	if !ok {
-		return v
+		if v == nil {
+			return nil
+		}
+		return redacted
 	}
 	out := obj{}
 	for k := range m {
@@ -156,16 +161,28 @@ func RedactInfo(b []byte) ([]byte, error) {
 	for k := range infoDrop {
 		delete(o, k)
 	}
-	if l, ok := o["Labels"].([]any); ok {
-		m := make([]any, len(l))
-		for i, v := range l {
-			s, _ := v.(string)
-			if k, _, found := bytes.Cut([]byte(s), []byte("=")); found {
-				s = string(k) + "=" + redacted
+	// Engine labels are a []string of k=v. Values are masked; non-string elements and any other
+	// Labels shape are replaced whole (fail closed).
+	if lv, present := o["Labels"]; present && lv != nil {
+		l, ok := lv.([]any)
+		if !ok {
+			o["Labels"] = redacted
+		} else {
+			m := make([]any, len(l))
+			for i, v := range l {
+				s, ok := v.(string)
+				if !ok {
+					m[i] = redacted
+					continue
+				}
+				if k, _, found := bytes.Cut([]byte(s), []byte("=")); found {
+					m[i] = string(k) + "=" + redacted
+				} else {
+					m[i] = redacted // not k=v: unknown content, mask whole
+				}
 			}
-			m[i] = s
+			o["Labels"] = m
 		}
-		o["Labels"] = m
 	}
 	return encode(o)
 }
