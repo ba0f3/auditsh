@@ -127,6 +127,18 @@ between the check and the attach is possible but the new process must also be a 
 the hidepid `gid=` group. User lookup is `/etc/passwd` only (static binary), so LDAP/SSSD-only Java users are not supported. JVMs in
 containers (other pid/mount namespace) are out of scope.
 
+## Docker diagnostics (opt-in, manual)
+
+`docker ps [-a]`, `images`, `info`, `version`, `stats --no-stream`, `network ls|inspect NAME`, `volume ls`,
+`inspect NAME`, `logs --tail N [--since T] NAME` (N <= 1000, T within 7d), and
+`events --since T1 --until T2` (window <= 24h, until <= now).
+
+These run through a root-owned helper, `/usr/local/sbin/auditsh-docker`, which re-validates argv,
+pins `DOCKER_HOST` and redacts inspect output (Env/Cmd/Args and similar fields never appear).
+botaudit is **not** put in group docker. A separate sudoers drop-in enables the helper. It is not
+installed by the packages. See [deploy/docker/README.md](deploy/docker/README.md), which also covers
+the socket-proxy alternative.
+
 ## Reproducible build
 The toolchain is pinned to go1.27.3 (the `toolchain` line in go.mod). Run `make build` (`./build.sh [rev]`):
 it clones the repo into a temp dir, checks out the commit, and builds with
