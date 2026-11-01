@@ -13,9 +13,13 @@ access to the docker socket is root-equivalent, so turning it on is a separate, 
   a fixed table and **builds** the docker argv itself.
 - It runs `/usr/bin/docker` by absolute path. The path and its parents must be root-owned, not symlinks
   and not group/world-writable. There is no shell and stdin is `/dev/null`.
-- The same check covers the CLI plugin dirs, `/usr/libexec/docker/cli-plugins` and `/usr/local/lib/docker/cli-plugins`,
-  when they exist. Each dir, its parents and every entry must pass, because the CLI may exec plugins as root to read
-  their metadata. If any of them fails, the helper refuses with exit 126.
+- The same check covers the docker CLI system plugin dirs, when they exist:
+  `/usr/local/lib/docker/cli-plugins`, `/usr/local/libexec/docker/cli-plugins`, `/usr/lib/docker/cli-plugins` and
+  `/usr/libexec/docker/cli-plugins`. This list is copied from `defaultSystemPluginDirs` in docker/cli v27.5.1.
+  Each dir, its parents and every entry must pass, because the CLI may exec plugins as root to read their metadata.
+  - A plugin entry may be a symlink (distro packages often use them) only if its fully resolved target and that
+    target's whole parent chain pass the check: root-owned, not group/world-writable.
+  - Dangling or looping symlinks are refused. If anything fails, the helper refuses with exit 126.
 - Concurrency cap: at most 2 runs at once. Each run takes a non-blocking `flock` on one of
   `/run/auditsh-docker.{0,1}.lock`. The lock files are root 0600, opened with O_NOFOLLOW, and must be regular
   files with a single link. When both are held, the helper exits 75 right away.

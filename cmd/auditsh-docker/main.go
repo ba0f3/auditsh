@@ -95,7 +95,13 @@ func (c fsCheck) node(p string, fi os.FileInfo) error {
 
 // pluginDirs are the system docker CLI plugin dirs. The CLI may exec every entry (as root) to probe
 // plugin metadata (e.g. for `info`), so each existing dir, its parents and every entry must be safe.
-var pluginDirs = []string{"/usr/libexec/docker/cli-plugins", "/usr/local/lib/docker/cli-plugins"}
+// Must match docker/cli cli-plugins/manager/manager_unix.go defaultSystemPluginDirs (v27.5.1).
+var pluginDirs = []string{
+	"/usr/local/lib/docker/cli-plugins",
+	"/usr/local/libexec/docker/cli-plugins",
+	"/usr/lib/docker/cli-plugins",
+	"/usr/libexec/docker/cli-plugins",
+}
 
 func (c fsCheck) plugins(dirs []string) error {
 	for _, d := range dirs {
@@ -114,6 +120,18 @@ func (c fsCheck) plugins(dirs []string) error {
 			fi, err := os.Lstat(p)
 			if err != nil {
 				return err
+			}
+			if fi.Mode()&os.ModeSymlink != 0 {
+				// Symlinked plugin (e.g. distro packages): the fully resolved target and its
+				// whole parent chain must pass safe(); dangling/looping links fail closed.
+				r, err := filepath.EvalSymlinks(p)
+				if err != nil {
+					return fmt.Errorf("%s: resolve symlink: %w", p, err)
+				}
+				if err := c.safe(r); err != nil {
+					return fmt.Errorf("%s -> %s: %w", p, r, err)
+				}
+				continue
 			}
 			if err := c.node(p, fi); err != nil {
 				return err

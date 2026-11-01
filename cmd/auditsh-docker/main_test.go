@@ -52,9 +52,31 @@ func TestPluginDirs(t *testing.T) {
 			os.Chmod(p, 0o757)
 			return func() { os.Chmod(p, 0o755) }
 		}},
-		{"symlink plugin", func() func() {
+		{"symlink plugin to non-owned target", func() func() {
 			p := filepath.Join(b, "docker-evil")
 			os.Symlink("/bin/sh", p)
+			return func() { os.Remove(p) }
+		}},
+		{"symlink plugin to writable target", func() func() {
+			tg := filepath.Join(d, "evil-target")
+			os.WriteFile(tg, []byte("x"), 0o757)
+			os.Chmod(tg, 0o757)
+			p := filepath.Join(b, "docker-evil")
+			os.Symlink(tg, p)
+			return func() { os.Remove(p); os.Remove(tg) }
+		}},
+		{"symlink plugin, target in writable dir", func() func() {
+			wd := filepath.Join(d, "wdir")
+			os.Mkdir(wd, 0o777)
+			os.Chmod(wd, 0o777)
+			os.WriteFile(filepath.Join(wd, "t"), []byte("x"), 0o755)
+			p := filepath.Join(b, "docker-evil")
+			os.Symlink(filepath.Join(wd, "t"), p)
+			return func() { os.Remove(p); os.RemoveAll(wd) }
+		}},
+		{"dangling symlink plugin", func() func() {
+			p := filepath.Join(b, "docker-evil")
+			os.Symlink(filepath.Join(d, "nope"), p)
 			return func() { os.Remove(p) }
 		}},
 		{"symlinked dir", func() func() {
@@ -76,6 +98,16 @@ func TestPluginDirs(t *testing.T) {
 	}
 	if err := c.plugins([]string{a, b}); err != nil {
 		t.Fatalf("restore failed: %v", err)
+	}
+	// Symlink whose resolved target (via a symlinked safe dir) passes safe() is allowed.
+	sd := filepath.Join(d, "real")
+	os.Mkdir(sd, 0o755)
+	os.Chmod(sd, 0o755)
+	os.WriteFile(filepath.Join(sd, "compose"), []byte("x"), 0o755)
+	os.Symlink(sd, filepath.Join(d, "alias"))
+	os.Symlink(filepath.Join(d, "alias", "compose"), filepath.Join(a, "docker-compose2"))
+	if err := c.plugins([]string{a, b}); err != nil {
+		t.Fatalf("safe symlinked plugin refused: %v", err)
 	}
 }
 
