@@ -182,3 +182,23 @@ func Validate(args []string, now time.Time) (Plan, error) {
 	}
 	return Plan{}, deny("form not allowed")
 }
+
+// Forms is the policy table in allowlist form: each entry is one accepted argv shape, literal tokens
+// or the anchored-regex patterns above. auditsh's allowlist.yaml docker rules must equal this list
+// exactly (enforced by TestDockerAllowlistMatchesPolicy); Validate accepts every instance of each
+// (TestFormsValidate). Validate remains the authority: it additionally checks ranges and windows.
+var Forms = [][]string{
+	{"ps"},
+	{"ps", "-a"},
+	{"images"},
+	{"info"},
+	{"version"},
+	{"stats", "--no-stream"},
+	{"network", "ls"},
+	{"volume", "ls"},
+	{"inspect", NamePattern},
+	{"network", "inspect", NamePattern},
+	{"logs", "--tail", TailPattern, NamePattern},
+	{"logs", "--tail", TailPattern, "--since", TimePattern, NamePattern},
+	{"events", "--since", TimePattern, "--until", TimePattern},
+}

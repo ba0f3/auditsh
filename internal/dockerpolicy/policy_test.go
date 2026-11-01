@@ -170,3 +170,39 @@ func FuzzValidate(f *testing.F) {
 		checkPlan(t, args, p)
 	})
 }
+
+func TestFormsValidate(t *testing.T) {
+	sample := map[string][]string{
+		NamePattern: {"web-1", "a", strings.Repeat("z", 128)},
+		TailPattern: {"1", "1000"},
+	}
+	seen := map[string]bool{}
+	for _, f := range Forms {
+		key := strings.Join(f, " ")
+		if seen[key] {
+			t.Errorf("duplicate form %q", key)
+		}
+		seen[key] = true
+		// events / logs --since need a valid ordered window, so fill times positionally.
+		times := []string{"2h", "1h"}
+		for _, v := range []int{0, len(sample[NamePattern]) - 1} {
+			ti := 0
+			var args []string
+			for _, tok := range f {
+				switch tok {
+				case NamePattern, TailPattern:
+					s := sample[tok]
+					args = append(args, s[min(v, len(s)-1)])
+				case TimePattern:
+					args = append(args, times[ti])
+					ti++
+				default:
+					args = append(args, tok)
+				}
+			}
+			if _, err := Validate(args, now); err != nil {
+				t.Errorf("form %q instance %q denied: %v", key, args, err)
+			}
+		}
+	}
+}

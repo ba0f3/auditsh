@@ -13,12 +13,19 @@ access to the docker socket is root-equivalent, so turning it on is a separate, 
   a fixed table and **builds** the docker argv itself.
 - It runs `/usr/bin/docker` by absolute path. The path and its parents must be root-owned, not symlinks
   and not group/world-writable. There is no shell and stdin is `/dev/null`.
+- The same check covers the CLI plugin dirs, `/usr/libexec/docker/cli-plugins` and `/usr/local/lib/docker/cli-plugins`,
+  when they exist. Each dir, its parents and every entry must pass, because the CLI may exec plugins as root to read
+  their metadata. If any of them fails, the helper refuses with exit 126.
+- Concurrency cap: at most 2 runs at once. Each run takes a non-blocking `flock` on one of
+  `/run/auditsh-docker.{0,1}.lock`. The lock files are root 0600, opened with O_NOFOLLOW, and must be regular
+  files with a single link. When both are held, the helper exits 75 right away.
+- The docker child gets `Pdeathsig=SIGKILL`, so it dies if the helper itself is killed.
 - The child gets a complete, fixed environment: `DOCKER_HOST=unix:///var/run/docker.sock`,
   `DOCKER_CONFIG=/nonexistent/...` (so no config.json, contexts, credential helpers, aliases or
   proxies) and `PATH=/usr/bin:/bin`.
 - Runs are bounded: a 12s timeout kills the process group (sudo's `command_timeout=15s` is the backstop).
   Text output is capped at 8 MiB and JSON at 16 MiB. Truncated JSON is never printed.
-- Exit 126 means the helper refused the argv. Other codes are docker's own exit code (124 means timeout).
+- Exit codes: 126 = refused (argv or an unsafe filesystem), 75 = busy, 124 = timeout. Any other code is docker's own.
 
 | client types (via auditsh)                     | helper runs                                                         |
 |------------------------------------------------|---------------------------------------------------------------------|

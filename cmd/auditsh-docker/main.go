@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -50,28 +51,124 @@ func die(code int, f string, a ...any) {
 	os.Exit(code)
 }
 
-// safe: path and every parent are root-owned, not symlinks, not group/world-writable.
-func safe(p string) error {
+// fsCheck holds the trust anchors; tests substitute a temp tree and their own uid.
+type fsCheck struct {
+	uid uint32 // required owner (0 in production)
+	top string // walk parents up to and including this dir ("/" in production)
+}
+
+var prod = fsCheck{uid: 0, top: "/"}
+
+// safe: p and every parent up to c.top are owned by c.uid, not symlinks, not group/world-writable.
+func (c fsCheck) safe(p string) error {
+	if !filepath.IsAbs(p) || filepath.Clean(p) != p {
+		return fmt.Errorf("%s: not absolute/clean", p)
+	}
 	for {
 		fi, err := os.Lstat(p)
 		if err != nil {
 			return err
 		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s is a symlink", p)
+		if err := c.node(p, fi); err != nil {
+			return err
 		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || st.Uid != 0 {
-			return fmt.Errorf("%s not root-owned", p)
-		}
-		if fi.Mode().Perm()&0o022 != 0 {
-			return fmt.Errorf("%s group/world-writable", p)
-		}
-		if p == "/" {
+		if p == c.top || p == "/" {
 			return nil
 		}
 		p = filepath.Dir(p)
 	}
+}
+
+func (c fsCheck) node(p string, fi os.FileInfo) error {
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink", p)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || st.Uid != c.uid {
+		return fmt.Errorf("%s not owned by uid %d", p, c.uid)
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s group/world-writable", p)
+	}
+	return nil
+}
+
+// pluginDirs are the system docker CLI plugin dirs. The CLI may exec every entry (as root) to probe
+// plugin metadata (e.g. for `info`), so each existing dir, its parents and every entry must be safe.
+var pluginDirs = []string{"/usr/libexec/docker/cli-plugins", "/usr/local/lib/docker/cli-plugins"}
+
+func (c fsCheck) plugins(dirs []string) error {
+	for _, d := range dirs {
+		if _, err := os.Lstat(d); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := c.safe(d); err != nil {
+			return err
+		}
+		ents, err := os.ReadDir(d)
+		if err != nil {
+			return err
+		}
+		for _, e := range ents {
+			p := filepath.Join(d, e.Name())
+			fi, err := os.Lstat(p)
+			if err != nil {
+				return err
+			}
+			if err := c.node(p, fi); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Concurrency cap: lockSlots root-only lock files in /run; each run holds one (non-blocking flock,
+// released by the kernel on exit). All busy -> refuse with exitBusy immediately.
+const (
+	lockDir   = "/run"
+	lockSlots = 2
+	exitBusy  = 75 // EX_TEMPFAIL
+)
+
+var errBusy = errors.New("busy: all slots in use, try again later")
+
+// acquire returns the held lock file (keep it open for the life of the run).
+func (c fsCheck) acquire(dir string, slots int) (*os.File, error) {
+	if err := c.safe(dir); err != nil {
+		return nil, err
+	}
+	for i := 0; i < slots; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("auditsh-docker.%d.lock", i))
+		f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("lock %s: %w", p, err)
+		}
+		fi, err := f.Stat()
+		if err == nil {
+			err = c.node(p, fi)
+		}
+		if err == nil {
+			st := fi.Sys().(*syscall.Stat_t)
+			if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 || st.Nlink != 1 {
+				err = fmt.Errorf("lock %s: not a private regular file", p)
+			}
+		}
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		switch err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); {
+		case err == nil:
+			return f, nil
+		case errors.Is(err, syscall.EWOULDBLOCK):
+			f.Close()
+		default:
+			f.Close()
+			return nil, fmt.Errorf("lock %s: %w", p, err)
+		}
+	}
+	return nil, errBusy
 }
 
 // capWriter keeps at most limit bytes, then cancels the command.
@@ -109,10 +206,21 @@ func main() {
 	if os.Geteuid() != 0 {
 		die(126, "must run as root via sudo")
 	}
-	if err := safe(dockerBin); err != nil {
+	if err := prod.safe(dockerBin); err != nil {
 		die(126, "docker binary check: %v", err)
 	}
-	os.Exit(run(plan))
+	if err := prod.plugins(pluginDirs); err != nil {
+		die(126, "docker cli-plugins check: %v", err)
+	}
+	lock, err := prod.acquire(lockDir, lockSlots)
+	if errors.Is(err, errBusy) {
+		die(exitBusy, "%v", err)
+	} else if err != nil {
+		die(126, "%v", err)
+	}
+	code := run(plan)
+	lock.Close()
+	os.Exit(code)
 }
 
 func run(plan dockerpolicy.Plan) int {
@@ -122,7 +230,10 @@ func run(plan dockerpolicy.Plan) int {
 	cmd.Env = env
 	cmd.Dir = "/"
 	cmd.Stdin = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Pdeathsig: if the helper itself is SIGKILLed (e.g. sudo command_timeout), the kernel kills docker.
+	// It fires on exit of the creating *thread*, so pin this goroutine to its thread first.
+	runtime.LockOSThread()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 2 * time.Second
 

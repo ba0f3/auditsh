@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,5 +74,36 @@ func TestDockerRuleConfig(t *testing.T) {
 	ok := "commands:\n  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: [ps]}\n"
 	if _, err := parseConfig([]byte(ok)); err != nil {
 		t.Errorf("valid docker rule rejected: %v", err)
+	}
+}
+
+// allowlist.yaml docker rules must be exactly the helper's policy table (no drift either way).
+func TestDockerAllowlistMatchesPolicy(t *testing.T) {
+	c := defaultCfg(t)
+	want := map[string]bool{}
+	for _, f := range dockerpolicy.Forms {
+		want[strings.Join(f, "\x00")] = true
+	}
+	got := map[string]bool{}
+	for _, r := range c.Rules["docker"] {
+		var pats []string
+		for _, a := range r.Args {
+			src := strings.TrimSuffix(strings.TrimPrefix(a.re.String(), "^(?:"), ")$")
+			pats = append(pats, src)
+		}
+		got[strings.Join(pats, "\x00")] = true
+		if !r.Docker {
+			t.Errorf("docker rule without docker: true: %q", pats)
+		}
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("policy form missing from allowlist.yaml: %q", strings.ReplaceAll(k, "\x00", " "))
+		}
+	}
+	for k := range got {
+		if !want[k] {
+			t.Errorf("allowlist.yaml docker rule not in helper policy: %q", strings.ReplaceAll(k, "\x00", " "))
+		}
 	}
 }

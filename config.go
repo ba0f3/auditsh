@@ -14,7 +14,7 @@ import (
 // internalProcRead is the pseudo-path for rules served by Go's own /proc reader.
 const internalProcRead = "internal:procread"
 
-// dockerHelperPath is the only path a docker: true rule may use (root-owned helper, deploy/README-docker.md).
+// dockerHelperPath is the only path a docker: true rule may use (root-owned helper, deploy/docker/README.md).
 const dockerHelperPath = "/usr/local/sbin/auditsh-docker"
 
 type rawRule struct {
