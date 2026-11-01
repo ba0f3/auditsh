@@ -38,8 +38,8 @@ case $tool in
     pid=$2
     case $# in
       2) ;;
-      4) num "$3" && [ "$3" -ge 100 ] && [ "$3" -le 1000 ] || die "bad interval"
-         num "$4" && [ "$4" -le 10 ] || die "bad count" ;;
+      4) if ! num "$3" || [ "$3" -lt 100 ] || [ "$3" -gt 1000 ]; then die "bad interval"; fi
+         if ! num "$4" || [ "$4" -gt 10 ]; then die "bad count"; fi ;;
       *) die "jstat form not allowed" ;;
     esac ;;
   *) die "tool not allowed" ;;
