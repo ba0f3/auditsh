@@ -1,0 +1,7 @@
+# /etc/sudoers.d/botaudit-docker  (root:root 0440)  -- install manually, see deploy/docker/README.md
+# Lets botaudit (via auditsh) run the root-owned docker diagnostics helper. botaudit is NOT in group
+# docker. Bare path = any argv: the helper itself is the policy gate (fixed allowlist of read-only
+# forms, re-validated in the helper; see internal/dockerpolicy). No NOEXEC: the helper must exec
+# /usr/bin/docker. Defaults for botaudit (env_reset, !setenv, secure_path, command_timeout=15s,
+# !log_output) come from /etc/sudoers.d/botaudit.
+botaudit ALL=(root) NOPASSWD: /usr/local/sbin/auditsh-docker

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("jcmd 1 GC0heap_info")

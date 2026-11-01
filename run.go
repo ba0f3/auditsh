@@ -36,7 +36,7 @@ func execArgv(r *rule, args []string, sudo, jvmOwner string) []string {
 		// jvmOwner has already passed the pid-owner and java-users checks in execute.
 		return append([]string{sudo, "-n", "-u", jvmOwner, "--", r.Path, r.Name}, args...)
 	}
-	if r.Sudo {
+	if r.Sudo || r.Docker {
 		return append([]string{sudo, "-n", "--", r.Path}, args...)
 	}
 	return append([]string{r.Path}, args...)
@@ -149,7 +149,7 @@ func execute(r *rule, args []string, out io.Writer, o runOpts) (result, error) {
 		if err := check(r.Path, o.binOwnerUID); err != nil {
 			return result{exit: 126}, fmt.Errorf("binary check: %w", err)
 		}
-		if r.Sudo {
+		if r.Sudo || r.Docker {
 			if err := checkTree(o.sudo, o.binOwnerUID); err != nil {
 				return result{exit: 126}, fmt.Errorf("sudo check: %w", err)
 			}

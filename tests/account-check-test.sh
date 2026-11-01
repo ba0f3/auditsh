@@ -5,8 +5,10 @@
 set -eu
 cd "$(dirname "$0")/.."
 blk() { sed -n '/^# BEGIN account-check/,/^# END account-check/p' "$1"; }
-[ -n "$(blk install.sh)" ] && [ "$(blk install.sh)" = "$(blk packaging/preinstall.sh)" ] \
-  || { echo "account-check block differs between install.sh and packaging/preinstall.sh" >&2; exit 1; }
+if [ -z "$(blk install.sh)" ] || [ "$(blk install.sh)" != "$(blk packaging/preinstall.sh)" ]; then
+  echo "account-check block differs between install.sh and packaging/preinstall.sh" >&2
+  exit 1
+fi
 # Q-1: cleanup state is initialised at top level (before any use), never taken from the environment.
 first=$(grep -nE '(CREATED_USER|CREATED_GROUP|AC_POST)' install.sh | head -1)
 case $first in *"CREATED_USER=0 CREATED_GROUP=0 AC_POST=0") ;; *) echo "install.sh must init CREATED_USER/CREATED_GROUP/AC_POST=0 before any use: $first" >&2; exit 1 ;; esac

@@ -10,7 +10,12 @@ GOVULNCHECK  := golang.org/x/vuln/cmd/govulncheck@v1.9.0
 FUZZTIME     ?= 30s
 FUZZLONGTIME ?= 30m
 FUZZPARALLEL ?= 2
-FUZZ_TARGETS := FuzzParseCommand FuzzAllowlistExec FuzzEnvSanitize FuzzLogEncoder FuzzProcRead
+# package:target pairs (every Fuzz* in the repo; TestFuzzTargetsListed keeps this complete).
+FUZZ_TARGETS := .:FuzzParseCommand .:FuzzAllowlistExec .:FuzzEnvSanitize .:FuzzLogEncoder .:FuzzProcRead \
+  .:FuzzCheckChain .:FuzzJVMDockerAllowlist .:FuzzJVMOwner .:FuzzJavaUsers .:FuzzJVMHelperScript \
+  ./internal/dockerpolicy:FuzzValidate ./internal/dockerpolicy:FuzzRedactContainers \
+  ./internal/dockerpolicy:FuzzRedactNetworks ./internal/dockerpolicy:FuzzRedactInfo \
+  ./internal/dockerpolicy:FuzzRedactRaw ./cmd/auditsh-docker:FuzzHelperArgv
 SHELL_FILES  := install.sh build.sh packaging/*.sh tests/chroot-test.sh tests/pkg-test.sh tests/account-check-test.sh deploy/auditsh-jvm .github/scripts/*.sh
 
 .DEFAULT_GOAL := help
@@ -35,12 +40,14 @@ lint: ## gofmt, shellcheck, actionlint, action SHA pins, visudo, goreleaser chec
 	actionlint
 	.github/scripts/check-action-pins.sh
 	visudo -cf deploy/sudoers.botaudit
+	visudo -cf deploy/docker/sudoers.botaudit-docker
 	$(GORELEASER) check
 
 fuzz: ## each fuzz target for FUZZTIME (default 30s)
-	@for f in $(FUZZ_TARGETS); do \
-	  echo "== $$f ($(FUZZTIME))"; \
-	  go test -run '^$$' -fuzz "^$$f\$$" -fuzztime $(FUZZTIME) -parallel $(FUZZPARALLEL) . || exit 1; \
+	@for pt in $(FUZZ_TARGETS); do \
+	  p=$${pt%%:*}; f=$${pt#*:}; \
+	  echo "== $$p $$f ($(FUZZTIME))"; \
+	  go test -run '^$$' -fuzz "^$$f\$$" -fuzztime $(FUZZTIME) -parallel $(FUZZPARALLEL) $$p || exit 1; \
 	done
 
 fuzz-long: ## each fuzz target for FUZZLONGTIME (default 30m)

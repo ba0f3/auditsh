@@ -243,6 +243,11 @@ func safeDir(t *testing.T) string {
 	}
 	os.Chmod(d, 0o755)
 	t.Cleanup(func() { os.RemoveAll(d) })
+	// The permission checks under test walk every parent up to "/". Where the checkout's own parent
+	// chain fails them (e.g. under /tmp, mode 1777), the test can't say anything: skip, don't fail.
+	if err := checkTree(d, uint32(os.Getuid())); err != nil {
+		t.Skipf("checkout path chain not owner/root-owned and non-writable (%v); run from a safe path or in CI", err)
+	}
 	return d
 }
 

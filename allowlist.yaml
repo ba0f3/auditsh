@@ -82,14 +82,37 @@ commands:
 # /proc/<pid>/exe is a root-owned .../bin/java, then runs jcmd/jstat from that same JDK bin dir.
 # Never allowed: GC.heap_dump, JFR.*, VM.command_line, VM.system_properties, VM.set_flag, ManagementAgent.*,
 # Compiler.*, JVMTI.*, System.* (helper has a fixed table too). The pid pattern must be exactly [1-9][0-9]{0,9}.
-  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'GC.heap_info']}
-  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'VM.native_memory', 'summary']}
-  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'Thread.print']}
-  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'VM.flags']}
-  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'VM.uptime']}
-  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'VM.version']}
+  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'GC\.heap_info']}
+  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'VM\.native_memory', 'summary']}
+  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'Thread\.print']}
+  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'VM\.flags']}
+  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'VM\.uptime']}
+  - {name: jcmd, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['[1-9][0-9]{0,9}', 'VM\.version']}
   # Commands that force a full stop-the-world GC are not offered (the helper refuses them too).
   - {name: jstat, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['-gcutil', '[1-9][0-9]{0,9}']}
   # interval 100..1000 ms, count 1..10: at most 10 s, under the 15 s timeout.
   - {name: jstat, path: /usr/local/sbin/auditsh-jvm, jvm: true, args: ['-gcutil', '[1-9][0-9]{0,9}', '([1-9][0-9]{2}|1000)', '([1-9]|10)']}
 # ---- END Java/JVM diagnostics ----
+
+# ---- BEGIN Docker diagnostics (docker: true) ----
+# path = root-owned helper /usr/local/sbin/auditsh-docker, run as `sudo -n -- helper <args>`. botaudit is
+# NEVER in group docker (docker.sock == root). The grant is a separate, manually installed drop-in
+# (/etc/sudoers.d/botaudit-docker, see deploy/docker/README.md); without it these fail cleanly (sudo -n).
+# The helper re-validates argv against the same table (internal/dockerpolicy), builds every --format
+# itself, pins DOCKER_HOST, bounds --tail (<=1000), --since (<=7d) and events windows (<=24h, until <= now),
+# and redacts inspect/info JSON (allowlisted fields; Env/Cmd/Args/Entrypoint/Healthcheck/log options dropped).
+# Names: '[A-Za-z0-9][A-Za-z0-9_.-]{0,127}'. Times: unix seconds, RFC3339, or <N>s|m|h (ago).
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['ps']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['ps', '-a']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['images']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['info']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['version']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['stats', '--no-stream']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['network', 'ls']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['volume', 'ls']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['inspect', '[A-Za-z0-9][A-Za-z0-9_.-]{0,127}']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['network', 'inspect', '[A-Za-z0-9][A-Za-z0-9_.-]{0,127}']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['logs', '--tail', '[1-9][0-9]{0,3}', '[A-Za-z0-9][A-Za-z0-9_.-]{0,127}']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['logs', '--tail', '[1-9][0-9]{0,3}', '--since', '[0-9]{1,11}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})|[1-9][0-9]{0,5}[smh]', '[A-Za-z0-9][A-Za-z0-9_.-]{0,127}']}
+  - {name: docker, path: /usr/local/sbin/auditsh-docker, docker: true, args: ['events', '--since', '[0-9]{1,11}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})|[1-9][0-9]{0,5}[smh]', '--until', '[0-9]{1,11}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})|[1-9][0-9]{0,5}[smh]']}
+# ---- END Docker diagnostics ----

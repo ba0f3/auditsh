@@ -113,7 +113,9 @@ if [ "$MODE" = local ]; then
   # Package mode: binary, allowlist and sudoers are owned by the deb/rpm; only the drop-in comes from $PKG_SHARE.
   SRC=$PKG_SHARE
   for f in "$BIN" "$JVM_HELPER" "$CONF_DIR/allowlist.yaml" "$SUDOERS" "$SRC/50-botaudit.conf"; do
-    [ -f "$f" ] && [ "$(stat -c %u "$f")" = 0 ] || die "$f missing or not root-owned (is the auditsh package installed?)"
+    if [ ! -f "$f" ] || [ "$(stat -c %u "$f")" != 0 ]; then
+      die "$f missing or not root-owned (is the auditsh package installed?)"
+    fi
   done
   cp "$SUDOERS" "$TMP/sudoers.check"; SUDOERS_SRC=$TMP/sudoers.check
 else
